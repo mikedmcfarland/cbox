@@ -3,6 +3,7 @@ use clap::Parser;
 
 mod cli;
 mod commands;
+mod config;
 
 use cli::{Cli, Command};
 
