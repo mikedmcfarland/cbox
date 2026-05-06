@@ -46,7 +46,7 @@ and appear as host tmux windows. Autonomous sessions use container tmux
 (headless).
 
     Host tmux
-    ├── Window 1 (tm: apella): local shells
+    ├── Window 1 (tm: project): local shells
     ├── Window 2 (cbox: auth-fix): SSH → dtach → /workspace/auth-fix
     ├── Window 3 (cbox: experiment): SSH → dtach → /workspace/experiment
     │

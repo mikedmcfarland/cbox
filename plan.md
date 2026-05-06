@@ -8,7 +8,7 @@ Isolated Claude Code sessions in Docker containers. The trust boundary is betwee
 
 ```
 Host tmux
-├── Window 1 (tm: apella): local shells
+├── Window 1 (tm: project): local shells
 ├── Window 2 (cbox: auth-fix): SSH → dtach → /workspace/auth-fix
 ├── Window 3 (cbox: experiment): SSH → dtach → /workspace/experiment
 │
@@ -478,7 +478,7 @@ Completions, examples, README, error handling.
 
 ## Supporting documents
 
-- **[README.md](README.md)** — full usage docs, configuration examples, Apella integration example
+- **[README.md](README.md)** — full usage docs, configuration examples
 - **[docs/adr/](docs/adr/)** — architecture decision records for all major design choices
 
 ## Verification
