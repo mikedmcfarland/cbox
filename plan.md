@@ -225,7 +225,7 @@ Trust boundary: the tier volume on the host. Mode `0700`, owned by user. Anythin
 
 ### Anthropic auth
 
-Inject `ANTHROPIC_API_KEY` (resolved via `op read` on host) at container start. Skips Claude Code's on-disk OAuth credential file (`~/.claude/.credentials.json`) entirely — nothing Anthropic-related lands on the tier volume.
+Inject `ANTHROPIC_uPI_KEY` (resolved via `op read` on host) at container start. Skips Claude Code's on-disk OAuth credential file (`~/.claude/.credentials.json`) entirely — nothing Anthropic-related lands on the tier volume.
 
 ### Token-based MCPs (GitHub, etc.)
 
@@ -324,7 +324,8 @@ Autonomous sessions (`cbox run`) use container tmux — headless, no user intera
 Key crates:
 - `clap` (derive) — CLI parsing and shell completion generation
 - `bollard` — async Docker Engine API client
-- `tokio` — async runtime (minimal, for bollard only — keep command handlers synchronous where possible)
+- `tokio` — async runtime (`current_thread` flavor; entrypoint is `#[tokio::main]`, command handlers and the `Backend` trait are async)
+- `async-trait` — `async fn` in trait declarations (the `Backend` trait per ADR 011)
 - `serde` + `serde_yaml` — config deserialization
 - `anyhow` — error handling (upgrade to custom error types later if needed)
 - `std::process::Command` — subprocess calls (tmux, ssh, git, op, docker CLI fallback)
