@@ -15,6 +15,10 @@ use serde::Deserialize;
 /// Default location of the user's cbox.yaml.
 pub const DEFAULT_CONFIG_RELPATH: &str = ".config/cbox/cbox.yaml";
 
+/// Environment variable that overrides the default config path. Useful for
+/// pointing at `examples/full-setup/cbox.yaml` for end-to-end validation.
+pub const CONFIG_ENV: &str = "CBOX_CONFIG";
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -152,6 +156,12 @@ fn expand_path(raw: &str) -> PathBuf {
     PathBuf::from(shellexpand::tilde(raw).into_owned())
 }
 
+fn resolve(p: &mut PathBuf, base: &Path) {
+    if !p.is_absolute() {
+        *p = base.join(&*p);
+    }
+}
+
 fn parse_mount(raw: &str) -> Result<MountSpec, String> {
     let mut parts = raw.splitn(3, ':');
     let host = parts
@@ -175,20 +185,52 @@ fn parse_mount(raw: &str) -> Result<MountSpec, String> {
 
 impl Config {
     /// Load and validate the config at `path`.
+    ///
+    /// After parsing, any non-absolute path fields are resolved against
+    /// `path`'s parent directory. This makes a config file relocatable —
+    /// `examples/full-setup/cbox.yaml` can use relative paths and still
+    /// build correctly when invoked from anywhere.
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("read {}", path.display()))?;
-        let cfg: Config = serde_yaml_bw::from_str(&raw)
+        let mut cfg: Config = serde_yaml_bw::from_str(&raw)
             .with_context(|| format!("parse {}", path.display()))?;
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        cfg.resolve_relative_paths(base);
         cfg.validate()?;
         Ok(cfg)
     }
 
-    /// Resolve the default config path (`$HOME/.config/cbox/cbox.yaml`).
+    /// Resolve the config path. Precedence:
+    /// 1. `$CBOX_CONFIG` (explicit override).
+    /// 2. `$HOME/.config/cbox/cbox.yaml` (default).
     pub fn default_path() -> Result<PathBuf> {
+        if let Some(p) = std::env::var_os(CONFIG_ENV) {
+            return Ok(PathBuf::from(p));
+        }
         let home = std::env::var_os("HOME")
             .ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
         Ok(PathBuf::from(home).join(DEFAULT_CONFIG_RELPATH))
+    }
+
+    /// Walk the path-bearing fields and prepend `base` to any that are
+    /// not absolute. Tilde expansion already happened at deserialise
+    /// time, so anything still relative is relative to the yaml file.
+    fn resolve_relative_paths(&mut self, base: &Path) {
+        resolve(&mut self.environment.0, base);
+        for layer in self.layers.values_mut() {
+            resolve(&mut layer.0, base);
+        }
+        for cred in self.credentials.values_mut() {
+            if let CredentialConfig::Mount { mount } = cred {
+                resolve(&mut mount.host_path, base);
+            }
+        }
+        for tier in self.tiers.values_mut() {
+            if let Some(s) = &mut tier.settings {
+                resolve(&mut s.0, base);
+            }
+        }
     }
 
     /// Cross-reference checks: tiers refer to declared layers, credentials,

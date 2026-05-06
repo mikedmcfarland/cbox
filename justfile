@@ -15,10 +15,20 @@ format-check:
 test:
     cargo test
 
+# Foundation image only. Useful as a quick smoke check of base/Dockerfile.
 base:
     docker build -t cbox-base base/
 
-integration: base
+# Build the example tier image by exercising the cbox build pipeline
+# end-to-end (base -> environment -> layers -> cbox-tier-dev). This is
+# the corpus the DinD integration test runs against.
+example-tier:
+    CBOX_CONFIG=examples/full-setup/cbox.yaml cargo run --quiet -- build dev
+
+# Integration tests (cargo test -- --ignored). Depends on the example
+# tier image so the DinD smoke test in src/backend/local_docker.rs
+# can start a container via the Backend trait — no raw `docker run`.
+integration: example-tier
     cargo test -- --ignored
 
 build:

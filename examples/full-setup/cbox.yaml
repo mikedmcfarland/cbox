@@ -1,12 +1,16 @@
-environment: ~/.config/cbox/environment
+# Self-contained example. Paths are relative to this file, so the same
+# config works from any working directory and serves as the corpus for
+# end-to-end build validation. A real install at ~/.config/cbox/ can use
+# absolute or ~ paths interchangeably.
+environment: environment
 
 default_layers: [claude]
 default_tier: dev
 
 layers:
-  claude: ~/.config/cbox/layers/claude
-  python: ~/.config/cbox/layers/python
-  node:   ~/.config/cbox/layers/node
+  claude: layers/claude
+  python: layers/python
+  node:   layers/node
 
 projects:
   my-app:
@@ -34,7 +38,7 @@ tiers:
     network: none
     credentials: [anthropic-key]
     dangerously-skip-permissions: true
-    settings: ~/.config/cbox/tiers/auto/settings.json
+    settings: tiers/auto/settings.json
 
   # Day-to-day interactive work. Network with domain allowlist.
   # Read-only GitHub, common MCPs.
@@ -42,11 +46,11 @@ tiers:
     layers: [python, node]
     network: bridge
     credentials: [anthropic-key, github-ro]
-    settings: ~/.config/cbox/tiers/dev/settings.json
+    settings: tiers/dev/settings.json
 
   # Full access for interactive sessions where you're watching.
   power:
     layers: [python, node]
     network: bridge
     credentials: [anthropic-key, github-rw, gcp-viewer]
-    settings: ~/.config/cbox/tiers/power/settings.json
+    settings: tiers/power/settings.json

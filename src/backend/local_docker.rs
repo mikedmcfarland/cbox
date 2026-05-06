@@ -302,6 +302,13 @@ fn map_summary_state(status: ContainerSummaryStateEnum) -> TierState {
 mod tests {
     use super::*;
 
+    /// Image tag the DinD smoke test expects to find. Built by
+    /// `just integration` (which runs `just base` first, then
+    /// `cbox build --` is the operator's responsibility for their
+    /// own tier images, OR our test target below builds the example
+    /// tier itself before exercising it).
+    const DIND_TEST_IMAGE: &str = "cbox-tier-dev:latest";
+
     #[test]
     fn container_name_uses_tier_prefix() {
         assert_eq!(container_name("dev"), "cbox-tier-dev");
@@ -361,5 +368,122 @@ mod tests {
             map_summary_state(ContainerSummaryStateEnum::EMPTY),
             TierState::Stopped
         );
+    }
+
+    /// Smoke test: build an example tier image, start it via the
+    /// [`Backend`] trait, exec `docker version` inside, then destroy.
+    /// Verifies the Phase 1 deliverable ("can build a tier image,
+    /// verify DinD works inside it") without raw `docker run` calls.
+    ///
+    /// Ignored by default; run with `just integration`. The test is
+    /// idempotent — it cleans up any prior `cbox-tier-dind-test`
+    /// container before starting.
+    #[tokio::test]
+    #[ignore]
+    async fn dind_smoke_via_backend() {
+        use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+        use futures_util::StreamExt;
+
+        let backend = LocalDockerBackend::new().expect("connect to docker");
+
+        // Pre-flight: the tier image must exist. We don't build it here
+        // — use `cargo run -- build dev` (or `just integration`) first.
+        if backend
+            .docker()
+            .inspect_image(DIND_TEST_IMAGE)
+            .await
+            .is_err()
+        {
+            panic!(
+                "missing image {DIND_TEST_IMAGE}. Build it first: \
+                 CBOX_CONFIG=examples/full-setup/cbox.yaml \
+                 cargo run -- build dev"
+            );
+        }
+
+        let tier = "dind-test";
+
+        // Idempotent setup: tear down any leftover container.
+        let _ = backend.destroy(tier).await;
+
+        let cfg = TierRunConfig {
+            image: DIND_TEST_IMAGE.to_string(),
+            env: Vec::new(),
+            network_mode: NetworkMode::Bridge,
+            privileged: true,
+            mounts: Vec::new(),
+        };
+
+        backend
+            .ensure_running(tier, &cfg)
+            .await
+            .expect("start tier");
+
+        // Wait for dockerd to come up inside the container. supervisord
+        // starts it asynchronously; poll up to ~60s. We require exec
+        // exit-code 0 — dockerd typically prints a connection error to
+        // stdout while still warming up, which is non-empty but not a
+        // success.
+        let mut version = None;
+        for _ in 0..60 {
+            match exec_capture(
+                backend.docker(),
+                &container_name(tier),
+                vec!["docker", "version", "--format", "{{.Server.Version}}"],
+            )
+            .await
+            {
+                Ok((0, out)) if !out.trim().is_empty() => {
+                    version = Some(out);
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            }
+        }
+
+        let teardown = backend.destroy(tier).await;
+
+        let version = version.expect("dockerd inside cbox-tier never reported a version");
+        eprintln!("inner dockerd version: {}", version.trim());
+        assert!(
+            !version.trim().is_empty(),
+            "expected non-empty docker server version"
+        );
+        teardown.expect("destroy tier");
+
+        // Helper avoids ambient `use bollard::*` polluting the module.
+        // Returns (exit_code, captured_output).
+        async fn exec_capture(
+            docker: &bollard::Docker,
+            container: &str,
+            cmd: Vec<&str>,
+        ) -> Result<(i64, String)> {
+            let exec = docker
+                .create_exec(
+                    container,
+                    CreateExecOptions {
+                        attach_stdout: Some(true),
+                        attach_stderr: Some(true),
+                        cmd: Some(cmd),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            let opts = StartExecOptions {
+                detach: false,
+                ..Default::default()
+            };
+            let mut buf = String::new();
+            if let StartExecResults::Attached { mut output, .. } =
+                docker.start_exec(&exec.id, Some(opts)).await?
+            {
+                while let Some(chunk) = output.next().await {
+                    let chunk = chunk?;
+                    buf.push_str(&chunk.to_string());
+                }
+            }
+            let info = docker.inspect_exec(&exec.id).await?;
+            Ok((info.exit_code.unwrap_or(-1), buf))
+        }
     }
 }
