@@ -1,5 +1,5 @@
 ### TL;DR
-<!-- Github issue (if applicable) + 1-2 sentence summary. -->
+<!-- GitHub issue (if applicable) + 1-2 sentence summary. -->
 
 ### What changed?
 <!-- Bullet list of notable changes. Skip the obvious. -->

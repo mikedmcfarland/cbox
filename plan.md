@@ -225,7 +225,7 @@ Trust boundary: the tier volume on the host. Mode `0700`, owned by user. Anythin
 
 ### Anthropic auth
 
-Inject `ANTHROPIC_uPI_KEY` (resolved via `op read` on host) at container start. Skips Claude Code's on-disk OAuth credential file (`~/.claude/.credentials.json`) entirely — nothing Anthropic-related lands on the tier volume.
+Inject `ANTHROPIC_API_KEY` (resolved via `op read` on host) at container start. Skips Claude Code's on-disk OAuth credential file (`~/.claude/.credentials.json`) entirely — nothing Anthropic-related lands on the tier volume.
 
 ### Token-based MCPs (GitHub, etc.)
 
