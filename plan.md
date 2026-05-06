@@ -1,0 +1,499 @@
+# Plan: `cbox` - Containerized Claude Code Sessions
+
+## Context
+
+Isolated Claude Code sessions in Docker containers. The trust boundary is between the tier instance and the host — not between sessions. Each tier runs as a single long-lived tier instance (a Docker container on the local backend). Interactive sessions use `dtach` for inner persistence and live as panes/windows in your host tmux — same keybindings, same workflow, just containerized underneath. Autonomous sessions use container tmux (headless). All sessions share Docker, auth state, and `.claude.json`. Git isolation is per-session via worktrees.
+
+## Architecture
+
+```
+Host tmux
+├── Window 1 (tm: apella): local shells
+├── Window 2 (cbox: auth-fix): SSH → dtach → /workspace/auth-fix
+├── Window 3 (cbox: experiment): SSH → dtach → /workspace/experiment
+│
+│   cbox-dev container (long-running)
+│   ├── dtach: auth-fix.sock     → /workspace/auth-fix (worktree)
+│   ├── dtach: experiment.sock   → /workspace/experiment (worktree)
+│   ├── shared: .claude.json, DinD, auth state, preferences
+│   └── inner dockerd (shared by all sessions)
+│
+└── cbox-auto container (long-running)
+    └── tmux: fix-tests.sock   → /workspace/fix-tests (autonomous)
+
+~/.cbox/workspaces/ ← mounted from containers for editor access
+```
+
+## Why this design
+
+The goal is to let Claude operate with more autonomy without risking your host machine. The threat model is **host protection** — controlling what credentials, network access, and tool permissions a Claude session has — not inter-session isolation. Sessions working on the same project at the same trust level don't need walls between them.
+
+This leads to one container per tier rather than one container per session:
+
+- **Claude Code accumulates valuable state** in `~/.claude.json` — feature flags, preferences, editor mode, onboarding, OAuth tokens for MCP servers. A fresh container loses all of this. A persistent tier instance preserves it naturally.
+- **OAuth-based MCP servers** (Notion, Linear, Slack) require a browser auth flow. In a persistent container you auth once and it sticks. Ephemeral containers would require re-auth every time or complex token extraction.
+- **Resource cost** matters. Each DinD container runs a Docker daemon, sshd, and supervisord. One per tier is manageable. One per session gets expensive fast, especially when running multiple Claude sessions on the same project.
+- **Sessions at the same trust level share the same credentials and permissions anyway.** Isolating them from each other adds complexity without improving the trust boundary that actually matters.
+
+Git isolation is per-session (worktrees or separate clones) so sessions don't step on each other's working tree. The shared Docker daemon requires dynamic port publishing when multiple sessions run compose stacks for the same project — the same constraint as running two copies on bare metal.
+
+## Key design decisions
+
+- **One container per tier** — sessions share Docker, `.claude.json`, auth, feature flags.
+- **Interactive sessions use dtach** — the first `cbox <name>` call creates a dtach session and a host tmux window. `cbox destroy` removes both. Tier instance lifecycle is separate.
+- **Autonomous sessions use container tmux** — `cbox run` creates a headless tmux session. No user interaction, no prefix conflict.
+- **Git isolation via worktrees** — each session gets its own clone or worktree at `/workspace/<name>/`.
+- **Tiers are the trust boundary** — credentials, network, tool permissions, Claude sandbox config.
+- **Shared DinD** — multiple compose stacks need dynamic ports (`COMPOSE_PROJECT_NAME` + non-explicit port publishing).
+
+## Image layers
+
+Plain Dockerfiles, `ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}`, composed by `cbox build`.
+
+```
+cbox-base          (ships with cbox — DinD, sshd, dtach, tmux, bubblewrap)
+  └── environment  (personal — dotfiles, shell, editor)
+       └── layer N     (tooling — python, node, etc.)
+```
+
+Tiers specify which layers they use:
+
+```yaml
+tiers:
+  dev:
+    layers: [python, node]
+    # ...
+```
+
+`cbox build` stacks `base → environment → layers` into a single image per tier.
+
+### Base image (`cbox-base`)
+
+Ships with cbox: Ubuntu 24.04, DinD (docker.io, containerd, supervisord), sshd, dtach, tmux, bubblewrap, socat, git, curl, jq. Non-root `cbox` user. Entrypoint: starts dockerd → creates `/run/cbox/` → runs `/cbox/init.d/*.sh` → `exec "$@"`. Requires `--privileged`.
+
+### Environment (personal)
+
+`FROM cbox-base`. Your dotfiles, shell, editor. Built once, cached.
+
+### Layers (composable, shareable)
+
+`ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}`. Stacked in order per tier config.
+
+## Security model
+
+| Layer                       | Provides | Configured by |
+|-------|----------|---------------|
+| Docker container | Filesystem/process isolation from host | cbox (automatic) |
+| Docker `--network` | Hard network on/off | Tier `network:` |
+| Claude sandbox (bubblewrap) | Domain allowlisting, FS restrictions | Tier `settings:` (settings.json) |
+| Claude permissions | Tool/MCP access with glob patterns | Tier `settings:` (settings.json) |
+| Credentials | Only tokens the tier specifies | Tier `credentials:` |
+
+Bubblewrap at full strength in `--privileged` containers. `allowUnsandboxedCommands: false` prevents sandbox escape.
+
+## cbox.yaml
+
+```yaml
+environment: ~/.config/cbox/environment
+
+default_layers: [claude]
+default_tier: dev
+
+layers:
+  claude: ~/.config/cbox/layers/claude
+  python: ~/.config/cbox/layers/python
+  node: ~/.config/cbox/layers/node
+
+projects:
+  my-app:
+    repo: git@github.com:org/my-app.git
+    tier: dev
+  my-api:
+    repo: git@github.com:org/my-api.git
+    tier: dev
+
+credentials:
+  anthropic-key:
+    env_var: ANTHROPIC_API_KEY
+    source: op://Dev Keys/Anthropic API Key/credential
+  github-ro:
+    env_var: GITHUB_TOKEN
+    source: op://Dev Keys/GitHub PAT Claude/credential
+  github-rw:
+    env_var: GITHUB_TOKEN
+    source: op://Dev Keys/GitHub PAT Full/credential
+  gcp-viewer:
+    mount: ~/.config/gcloud:/home/cbox/.config/gcloud:ro
+
+tiers:
+  auto:
+    layers: [claude]
+    network: none
+    credentials: [anthropic-key]
+    dangerously-skip-permissions: true
+    settings: ~/.config/cbox/tiers/auto/settings.json
+  dev:
+    layers: [python, node]
+    network: bridge
+    credentials: [anthropic-key, github-ro]
+    settings: ~/.config/cbox/tiers/dev/settings.json
+  power:
+    layers: [python, node]
+    network: bridge
+    credentials: [anthropic-key, github-rw, gcp-viewer]
+    settings: ~/.config/cbox/tiers/power/settings.json
+```
+
+## CLI
+
+| Command | Description |
+|---------|-------------|
+| `cbox <name> [project-or-path]` | Create or attach (idempotent). New: host tmux window + Claude in dtach. Existing: shell in same workspace. `--shell`/`--claude`/`--attach` to override. |
+| `cbox run <name> <project-or-path> <prompt>` | Autonomous session (container tmux, headless). Detach. |
+| `cbox exec <name> <cmd>` | One-off command in session's workspace. |
+| `cbox auth <tier>` | Interactive session for OAuth MCP setup. |
+| `cbox list` | List sessions across all tiers. |
+| `cbox destroy <name>` | Kill session, clean up socket. |
+| `cbox build [tier]` | Build image for a tier. |
+| `cbox tier stop <tier>` | Stop a tier instance. |
+| `cbox logs <tier>` | Tail tier instance logs. |
+| `cbox cleanup` | Stop tier instances with no sessions. |
+| `cbox ssh-config` | Update `~/.ssh/cbox_hosts`. |
+| `cbox completions <shell>` | Print shell completions. |
+
+Flags: `--tier`, `--branch`, `--no-cache`.
+
+`cbox <name>` is idempotent — first call starts Claude in dtach, subsequent calls open a shell in the same workspace. `--shell` on first call for a shell instead of Claude; `--claude` on subsequent calls for another Claude session; `--attach` to reattach to the existing dtach session. `run` always detaches. Tier containers auto-start on first use if not running.
+
+## Session lifecycle
+
+### Interactive (`cbox <name>`)
+
+1. `cbox auth-fix --branch fix-auth`  (run from the project's working directory)
+2. Resolves project → tier `dev`, repo URL
+3. If dev container isn't running or is paused, starts/unpauses it
+4. Inside container: `git clone` or `git worktree add` at `/workspace/auth-fix/`
+5. Creates dtach session: `dtach -A /run/cbox/auth-fix.sock -z claude`
+6. Creates host tmux window `cbox:auth-fix`, SSHes into the dtach session
+7. Switches to that window
+
+On subsequent calls (`cbox auth-fix`), detects the existing dtach socket and opens a shell in the same container/workspace. The Claude session is still running in the original dtach — switch to its host tmux window to see it, or use `--attach` to reattach directly. Use `--claude` to start an additional Claude session instead of a shell.
+
+### Autonomous (`cbox run`)
+
+1. `cbox run fix-tests --tier auto "fix the failing tests"`  (run from the project's working directory)
+2. Same container/worktree setup as above
+3. Creates container tmux session: `tmux -S /run/cbox/auto-tests.sock new-session -d`
+4. Runs Claude Code with the prompt inside that tmux session
+5. Returns immediately (headless)
+
+### Destroy
+
+`cbox destroy auth-fix` destroys the session (dtach/tmux socket + host tmux window). The session workspace persists by default; pass `--workspace` to remove it. If no alive sessions remain in the tier, the tier instance auto-pauses.
+
+## Container lifecycle
+
+Tier containers are identified by Docker labels (`managed-by=cbox`, `cbox.tier=<name>`).
+
+- **Auto-pause**: When the last session in a tier is destroyed (no sockets remain in `/run/cbox/`), `cbox destroy` pauses the container (`docker pause`). Zero CPU, instant resume.
+- **Auto-resume**: the next session-creating call unpauses a paused tier instance transparently.
+- **Explicit stop**: `cbox tier stop <tier>` stops the tier instance entirely (frees all resources, slower restart).
+- **Cleanup**: `cbox cleanup` stops all tier instances with no alive sessions.
+
+Containers stay paused rather than stopped by default to preserve fast resume. `cbox list` shows container state (running/paused/stopped) alongside sessions.
+
+## Session tracking
+
+- **Tier containers**: Docker labels (`managed-by=cbox`, `cbox.tier=dev`)
+- **Sessions**: All session sockets live in `/run/cbox/` inside each tier instance. Interactive sessions use dtach sockets, autonomous sessions use tmux sockets. Detection is backend-agnostic — just list the directory.
+- **Detection**: `ls /run/cbox/` inside the container. Socket exists = session alive. No sockets left → auto-pause the tier instance.
+- No separate state files.
+
+## Workspaces and git
+
+Each session gets `/workspace/<name>/` inside the tier instance. Mounted to host at `~/.cbox/workspaces/<name>/` for editor access.
+
+For multiple sessions on the same repo:
+- First session: `git clone <repo> /workspace/auth-fix && cd /workspace/auth-fix && git checkout fix-auth`
+- Second session: `git clone <repo> /workspace/experiment` (separate clone) or `git worktree add /workspace/experiment main` (worktree from first clone)
+
+## Auth
+
+**Do not mount `~/.claude.json` from host.** The tier instance has its own `.claude.json` that accumulates state naturally — preferences, feature flags, MCP configs, onboarding.
+
+Trust boundary: the tier volume on the host. Mode `0700`, owned by user. Anything written inside the container is visible to anyone with access to that path. See ADR 012 for the full credential model.
+
+### Anthropic auth
+
+Inject `ANTHROPIC_API_KEY` (resolved via `op read` on host) at container start. Skips Claude Code's on-disk OAuth credential file (`~/.claude/.credentials.json`) entirely — nothing Anthropic-related lands on the tier volume.
+
+### Token-based MCPs (GitHub, etc.)
+
+init.d scripts register MCPs at container start using injected env vars:
+
+```bash
+# init.d/10-mcp-github.sh
+[ -n "$GITHUB_TOKEN" ] && claude mcp add github \
+    https://api.githubcopilot.com/mcp/ -t http -s user \
+    -H "Authorization: Bearer $GITHUB_TOKEN"
+```
+
+`claude mcp add` persists the header into the container's `.claude.json`. The token is on the tier volume from that point on, regardless of whether the env var is still set.
+
+### OAuth-based MCPs (Notion, Linear, Slack)
+
+```
+cbox auth dev    # one-time interactive session
+```
+
+First use triggers an OAuth prompt — paste the URL in a host browser. The resulting token lands in the container's credential storage on the tier volume (exact file path TBD; verify before relying on encryption-at-rest in remote backends — see ADR 012).
+
+Since the container is long-lived, you auth once and it sticks across sessions.
+
+### Remote backends
+
+The local model assumes the tier volume is on a disk you trust. Remote backends break that assumption — see ADR 012 for the planned `apiKeyHelper`-based broker for the Anthropic key and the open questions around MCP token storage.
+
+## Docker-in-Docker: shared daemon
+
+All sessions in a tier share the same Docker daemon. This has implications:
+
+**Multiple compose stacks on the same project**: Use `COMPOSE_PROJECT_NAME` (cbox sets this to the session name automatically) and **dynamic port publishing** to avoid conflicts.
+
+```yaml
+# Instead of fixed ports:
+ports:
+  - "5432:5432"    # conflicts if two stacks run
+
+# Use dynamic ports:
+ports:
+  - "5432"          # Docker picks the host port
+```
+
+Discover the actual port at runtime:
+
+```bash
+SQL_PORT=$(docker compose port database 5432 | cut -d: -f2)
+```
+
+**Different projects in the same tier**: Usually no port conflicts since different services use different ports. Fixed port mappings are fine.
+
+**Recommendation**: Projects used with cbox should publish ports dynamically. This is also good practice for CI. Document this as a requirement for multi-session compose workflows.
+
+## Host tmux integration
+
+Interactive sessions live inside host tmux as panes and windows. No container tmux for interactive use — `dtach` provides inner persistence with zero keybinding footprint. Same prefix, same copy mode, same splits. The containerized aspect is barely noticeable — just a different status bar color.
+
+```
+cbox auth-fix       → host tmux window "cbox:auth-fix" + SSH → dtach (Claude)
+ctrl-b d            → detach from host tmux (dtach keeps Claude alive)
+cbox auth-fix       → shell in same workspace (from any pane)
+cbox auth-fix --attach → reattach to the dtach session
+cbox destroy auth-fix → destroy session (socket + window); workspace persists
+```
+
+Autonomous sessions (`cbox run`) use container tmux — headless, no user interaction. Inspect with `ssh <tier> tmux -S /run/cbox/<name>.sock attach`.
+
+**Clipboard**: OSC 52 over SSH. Terminal must support it (iTerm2, kitty, alacritty). Host tmux needs `set -g allow-passthrough on`.
+
+**Keybindings**: All keybindings are your normal host tmux config. No container tmux means no prefix collision.
+
+**Visual indicator**: cbox windows use a different status bar color so you know you're in a container. Implementation TBD (per-window status style or window name prefix).
+
+## User config layout
+
+```
+~/.config/cbox/
+  cbox.yaml
+  environment/
+    Dockerfile, zshrc, gitconfig, tmux.conf
+  layers/
+    claude/Dockerfile
+    python/Dockerfile
+    node/Dockerfile
+  tiers/
+    auto/settings.json
+    dev/settings.json
+    power/settings.json
+```
+
+## Implementation details
+
+**Language:** Rust. **Build:** cargo. **Install:** `cargo install --path .` or prebuilt binary.
+
+Key crates:
+- `clap` (derive) — CLI parsing and shell completion generation
+- `bollard` — async Docker Engine API client
+- `tokio` — async runtime (minimal, for bollard only — keep command handlers synchronous where possible)
+- `serde` + `serde_yaml` — config deserialization
+- `anyhow` — error handling (upgrade to custom error types later if needed)
+- `std::process::Command` — subprocess calls (tmux, ssh, git, op, docker CLI fallback)
+
+Testing:
+- `assert_cmd` + `predicates` — integration tests against the compiled binary
+- Unit tests for config parsing, image layer ordering, session detection
+- Integration tests that hit Docker are `#[ignore]`'d — run explicitly with `cargo test -- --ignored`
+
+## Development workflow
+
+`cargo` is the inner loop. Docker is only involved when testing integration points.
+
+**justfile** (task runner):
+
+```just
+# Type-check only — ~1-3s incremental, run after every edit
+check:
+    cargo check
+
+# Lint
+lint:
+    cargo clippy -- -D warnings
+
+# Format
+format:
+    cargo fmt
+
+# Unit tests (no Docker required)
+test:
+    cargo test
+
+# Build the base image (one-time, or when base/ changes)
+base:
+    docker build -t cbox-base base/
+
+# Integration tests (requires Docker + base image)
+integration: base
+    cargo test -- --ignored
+
+# Build release binary
+build:
+    cargo build --release
+```
+
+**Typical iteration cycle:**
+
+1. Edit code
+2. `just check` — compiles? (~1-3s incremental)
+3. `just test` — logic correct? (~2-5s, no Docker)
+4. `cargo run -- build dev` / `cargo run -- list` — works against real Docker? (only when touching Docker/tmux/SSH integration)
+
+Steps 1-3 are where 90% of development happens. Step 4 validates integration points. No containers in the inner loop.
+
+**What's unit-testable without Docker:** config parsing, CLI arg validation, layer ordering, SSH config generation, credential resolution logic — pure functions.
+
+**What needs Docker:** image builds, container start/stop/pause, socket detection. These go in `#[ignore]`'d integration tests gated behind `cargo test -- --ignored`, and are exercised via `cargo run` during development.
+
+## Repo structure
+
+```
+cbox/
+  Cargo.toml
+  justfile
+  src/
+    main.rs           # entrypoint, clap dispatch
+    cli.rs            # clap command/subcommand definitions
+    config.rs         # cbox.yaml parsing, tier/layer/credential/backend structs
+    backend/
+      mod.rs          # Backend trait, TierEndpoint, TierState, TierRunConfig
+      local_docker.rs # bollard client, local container lifecycle, image builds
+    session.rs        # dtach/tmux session create/attach/destroy (uses TierEndpoint)
+    tmux.rs           # host tmux window/pane management
+    ssh.rs            # ssh-config generation from TierEndpoint
+    credentials.rs    # 1Password op read, env var resolution
+  base/
+    Dockerfile, entrypoint.sh, supervisord.conf, daemon.json, sshd_config
+  examples/
+    cbox.yaml
+    environment/Dockerfile
+    layers/claude/Dockerfile
+    tiers/dev/settings.json
+  install.sh
+  README.md
+  LICENSE
+```
+
+## Implementation phases
+
+### Phase 1: Foundation
+Rust project scaffold, base Dockerfile, `cbox build`.
+- Cargo.toml, justfile, src/ structure, clap CLI skeleton with all subcommands stubbed
+- Config parsing: serde structs for cbox.yaml (tiers, layers, credentials, projects, backends)
+- Backend trait (`backend/mod.rs`): `Backend`, `TierEndpoint`, `TierState`, `TierRunConfig` — see [ADR 011](docs/adr/011-backend-abstraction.md)
+- Local Docker backend (`backend/local_docker.rs`): bollard client, container lifecycle
+- Image building: reads cbox.yaml, chains Dockerfiles per tier with `BASE_IMAGE` arg via bollard (lives outside the backend trait)
+- Base image: Dockerfile, entrypoint.sh, supervisord, sshd
+- `cbox build` — builds tier images locally
+- `just check` / `just test` passing from the start
+- **Result:** can build a tier image, verify DinD works inside it
+
+### Phase 2: Core lifecycle
+`cbox <name>`, `cbox destroy`.
+- Start tier instance if not running
+- Create dtach session, git clone/worktree into `/workspace/<name>/`
+- Create host tmux window with `default-command` wired to SSH + workspace
+- Idempotent: subsequent calls open new shell in same workspace
+- Kill dtach session + host tmux window on destroy
+- **Result:** can create, connect, destroy sessions inside host tmux
+
+### Phase 3: Inspection + autonomous
+`cbox run`, `cbox list`, `cbox exec`.
+- Autonomous mode: create container tmux session, run `claude -p`, detach
+- List sessions across tier instances (query `/run/cbox/` sockets)
+- One-off command execution in a session's workspace
+- **Result:** can run Claude hands-off, inspect running sessions
+
+### Phase 4: Security model
+Tiers, credentials, settings.json.
+- Parse tier config from cbox.yaml
+- Credential resolution (1Password `op read` + env vars)
+- Mount tier settings.json into container
+- Docker network mode per tier
+- **Result:** trust boundary enforced — auto tier has no network, dev tier has domain allowlists
+
+### Phase 5: MCP + auth
+`cbox auth`, init.d MCP setup, `cbox ssh-config`.
+- init.d scripts for MCP server registration
+- `cbox auth` for OAuth MCP flows in persistent containers
+- SSH config auto-management (`~/.ssh/cbox_hosts`)
+- `cbox tier stop`, `cbox cleanup`
+- **Result:** full MCP support, VSCode Remote-SSH works
+
+### Phase 6: Polish
+Completions, examples, README, error handling.
+- Shell completions via `clap_complete` (zsh, bash, fish — generated at build time or via `cbox completions`)
+- Example configs (cbox.yaml, environment Dockerfile, tier settings.json)
+- README with full documentation
+- Error handling: Docker not running, tier instance crash, SSH key management
+- Cross-compile for aarch64-apple-darwin (primary) and x86_64 if needed
+- **Result:** publishable
+
+## Open questions for implementation
+
+- **Claude Code auth inside container**: Host uses OAuth (`oauthAccount` in `.claude.json`). Verify `ANTHROPIC_API_KEY` works independently or if OAuth re-auth is needed.
+- **SSH key management**: How keys get into the container — build arg, mounted from host, or generated per container.
+- **Container upgrades**: When rebuilding a tier image, `.claude.json` state should survive. Likely a Docker volume at `/home/cbox/.claude/`.
+- **init.d script delivery**: Baked into layers, mounted at runtime, or both.
+
+---
+
+## Supporting documents
+
+- **[README.md](README.md)** — full usage docs, configuration examples, Apella integration example
+- **[docs/adr/](docs/adr/)** — architecture decision records for all major design choices
+
+## Verification
+
+1. `cbox build dev` → image built with environment + python + node layers
+2. `cbox test dev --tier dev` → tier instance starts, host tmux window created, dtach session running
+3. Split pane in cbox window → new pane auto-SSHes into same container/workspace
+4. `cbox test` from another pane → second independent shell in same workspace
+5. `cbox second dev` → second session in same container, separate workspace
+6. Both sessions share `.claude.json`, Docker daemon, auth state
+7. Git workspaces isolated: `/workspace/test/` and `/workspace/second/`
+8. Kill SSH connection → dtach keeps process alive → reconnect succeeds
+9. `docker compose up` in two sessions with `COMPOSE_PROJECT_NAME` → separate stacks, no conflicts
+10. Dev tier settings.json enforced: domain allowlist, tool permissions
+11. `cbox run hello --tier auto "create hello.txt"` → runs in auto tier, detached (container tmux)
+12. `cbox list` → shows sessions across tiers (reads `/run/cbox/` in each container)
+13. `cbox destroy test && cbox destroy second` → sessions destroyed, tier instance auto-pauses
+14. `cbox tier stop dev` → tier instance stopped

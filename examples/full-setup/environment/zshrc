@@ -1,0 +1,6 @@
+# Container-specific zshrc. Symlink to your real zshrc, or source it:
+# source ~/dotfiles/zsh/.zshrc
+
+# Minimal stub:
+export PATH="$HOME/.local/bin:$PATH"
+autoload -Uz compinit && compinit

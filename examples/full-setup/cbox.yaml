@@ -1,0 +1,52 @@
+environment: ~/.config/cbox/environment
+
+default_layers: [claude]
+default_tier: dev
+
+layers:
+  claude: ~/.config/cbox/layers/claude
+  python: ~/.config/cbox/layers/python
+  node:   ~/.config/cbox/layers/node
+
+projects:
+  my-app:
+    repo: git@github.com:org/my-app.git
+    tier: dev
+
+credentials:
+  anthropic-key:
+    env_var: ANTHROPIC_API_KEY
+    source: op://Vault/Anthropic Key/credential
+  github-ro:
+    env_var: GITHUB_TOKEN
+    source: op://Vault/GitHub PAT Read/credential
+  github-rw:
+    env_var: GITHUB_TOKEN
+    source: op://Vault/GitHub PAT Write/credential
+  gcp-viewer:
+    mount: ~/.config/gcloud:/home/cbox/.config/gcloud:ro
+
+tiers:
+  # Fully autonomous. No network at all — Claude can read, write, run tests,
+  # but can't reach the internet or exfiltrate anything. Safe to walk away.
+  auto:
+    layers: [python, node]
+    network: none
+    credentials: [anthropic-key]
+    dangerously-skip-permissions: true
+    settings: ~/.config/cbox/tiers/auto/settings.json
+
+  # Day-to-day interactive work. Network with domain allowlist.
+  # Read-only GitHub, common MCPs.
+  dev:
+    layers: [python, node]
+    network: bridge
+    credentials: [anthropic-key, github-ro]
+    settings: ~/.config/cbox/tiers/dev/settings.json
+
+  # Full access for interactive sessions where you're watching.
+  power:
+    layers: [python, node]
+    network: bridge
+    credentials: [anthropic-key, github-rw, gcp-viewer]
+    settings: ~/.config/cbox/tiers/power/settings.json
