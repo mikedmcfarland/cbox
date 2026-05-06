@@ -41,7 +41,11 @@ ENV LANG=en_US.UTF-8 \
 
 # Non-root user that owns interactive sessions. Passwordless sudo so init
 # scripts and tier setup can adjust the container without re-baking.
-RUN useradd --create-home --shell /bin/bash --uid 1000 cbox \
+# Ubuntu 24.04 ships a default `ubuntu` user at UID 1000 — drop it first
+# so we can claim that UID for cbox (matches typical host user UID,
+# avoids permission churn on bind-mounted workspaces).
+RUN userdel --remove ubuntu 2>/dev/null || true \
+    && useradd --create-home --shell /bin/bash --uid 1000 cbox \
     && usermod -aG docker cbox \
     && echo 'cbox ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/cbox \
     && chmod 0440 /etc/sudoers.d/cbox
@@ -71,4 +75,6 @@ RUN chmod 0755 /usr/local/bin/cbox-entrypoint
 EXPOSE 22
 
 ENTRYPOINT ["/usr/local/bin/cbox-entrypoint"]
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+# `-n` keeps supervisord in the foreground; otherwise it daemonizes and
+# the container exits immediately.
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]

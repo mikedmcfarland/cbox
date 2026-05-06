@@ -13,6 +13,15 @@
 
 set -euo pipefail
 
+# Layers (environment, language layers) typically end with `USER cbox`
+# so subsequent COPY/RUN don't accumulate root-owned files. supervisord
+# needs root to manage processes and bind sshd on :22, so re-exec via
+# sudo if we landed here as a non-root user. cbox has NOPASSWD sudo
+# (see base/Dockerfile).
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo -E /usr/local/bin/cbox-entrypoint "$@"
+fi
+
 # 1. sshd host keys
 if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
     ssh-keygen -A >/dev/null
