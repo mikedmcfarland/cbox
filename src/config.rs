@@ -103,7 +103,7 @@ pub struct BackendConfig {
     pub kind: String,
 
     #[serde(flatten)]
-    pub extra: serde_yaml_ng::Value,
+    pub extra: serde_yaml_bw::Value,
 }
 
 /// A path that is `~`-expanded at deserialisation against the user's home dir.
@@ -178,7 +178,7 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("read {}", path.display()))?;
-        let cfg: Config = serde_yaml_ng::from_str(&raw)
+        let cfg: Config = serde_yaml_bw::from_str(&raw)
             .with_context(|| format!("parse {}", path.display()))?;
         cfg.validate()?;
         Ok(cfg)
@@ -349,7 +349,7 @@ tiers:
   bad:
     layers: [python, node]
 "#;
-        let err = serde_yaml_ng::from_str::<Config>(yaml)
+        let err = serde_yaml_bw::from_str::<Config>(yaml)
             .unwrap()
             .validate()
             .unwrap_err()
@@ -368,7 +368,7 @@ tiers:
     layers: [c]
     credentials: [missing]
 "#;
-        let err = serde_yaml_ng::from_str::<Config>(yaml)
+        let err = serde_yaml_bw::from_str::<Config>(yaml)
             .unwrap()
             .validate()
             .unwrap_err()
@@ -389,7 +389,7 @@ tiers:
   dev:
     layers: [python, node]
 "#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
         cfg.validate().unwrap();
         assert_eq!(
             cfg.effective_layers("dev").unwrap(),

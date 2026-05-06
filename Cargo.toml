@@ -14,11 +14,11 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-bollard = "0.18"
+bollard = "0.21"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
-serde_yaml_ng = "0.10"
+serde_yaml_bw = "2"
 shellexpand = "3"
 tokio = { version = "1", features = ["macros", "rt", "process", "fs", "io-util"] }
 
