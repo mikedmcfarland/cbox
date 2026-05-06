@@ -1,0 +1,365 @@
+//! Local Docker backend (ADR 011).
+//!
+//! Tier instances are long-running Docker containers identified by labels:
+//! `managed-by=cbox` and `cbox.tier=<name>`. The container name is
+//! `cbox-tier-<name>`. State (`.claude.json`, workspaces, Docker image
+//! cache) lives on a named volume per tier.
+//!
+//! Phase 1 wires the bollard client and lifecycle methods. Sessions and
+//! SSH endpoint discovery come in Phase 2; [`endpoint`](LocalDockerBackend::endpoint)
+//! currently returns `None` even for running instances.
+
+use std::collections::HashMap;
+
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use bollard::Docker;
+use bollard::errors::Error as DockerError;
+use bollard::models::{
+    ContainerCreateBody, ContainerStateStatusEnum, ContainerSummaryStateEnum, HostConfig,
+    NetworkingConfig,
+};
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder,
+};
+
+use super::{Backend, Mount, MountSource, TierEndpoint, TierInfo, TierRunConfig, TierState};
+use crate::config::NetworkMode;
+
+/// Docker label that marks every cbox-managed container.
+pub const MANAGED_BY_LABEL: &str = "managed-by";
+pub const MANAGED_BY_VALUE: &str = "cbox";
+
+/// Docker label whose value is the tier name.
+pub const TIER_LABEL: &str = "cbox.tier";
+
+/// Backend identifier reported in [`TierInfo`].
+pub const BACKEND_NAME: &str = "local";
+
+/// Compose the container name cbox uses for a tier instance.
+pub fn container_name(tier: &str) -> String {
+    format!("cbox-tier-{tier}")
+}
+
+pub struct LocalDockerBackend {
+    docker: Docker,
+}
+
+impl LocalDockerBackend {
+    /// Connect to the local Docker daemon using platform defaults
+    /// (Unix socket on macOS/Linux, named pipe on Windows).
+    pub fn new() -> Result<Self> {
+        let docker = Docker::connect_with_local_defaults()
+            .context("connect to local Docker daemon")?;
+        Ok(Self { docker })
+    }
+
+    /// Borrow the underlying bollard client. Image building lives outside
+    /// the [`Backend`] trait (ADR 011) but uses the same client.
+    pub fn docker(&self) -> &Docker {
+        &self.docker
+    }
+}
+
+#[async_trait]
+impl Backend for LocalDockerBackend {
+    async fn ensure_running(
+        &self,
+        tier: &str,
+        config: &TierRunConfig,
+    ) -> Result<TierEndpoint> {
+        let name = container_name(tier);
+
+        match self.tier_state(tier).await? {
+            TierState::Running => {}
+            TierState::Paused => {
+                self.docker
+                    .unpause_container(&name)
+                    .await
+                    .with_context(|| format!("unpause {name}"))?;
+            }
+            TierState::Stopped => {
+                self.docker
+                    .start_container(&name, None::<bollard::query_parameters::StartContainerOptions>)
+                    .await
+                    .with_context(|| format!("start {name}"))?;
+            }
+            TierState::NotCreated => {
+                create_container(&self.docker, tier, config).await?;
+                self.docker
+                    .start_container(&name, None::<bollard::query_parameters::StartContainerOptions>)
+                    .await
+                    .with_context(|| format!("start {name}"))?;
+            }
+        }
+
+        // Phase 2 will wire the SSH endpoint here. For now report a
+        // stub — callers that actually need to connect will hit this
+        // and fail loudly, which is the desired behaviour during Phase 1.
+        Ok(TierEndpoint {
+            host: "localhost".to_string(),
+            port: 0,
+            user: "cbox".to_string(),
+            ssh_options: Vec::new(),
+        })
+    }
+
+    async fn pause(&self, tier: &str) -> Result<()> {
+        let name = container_name(tier);
+        self.docker
+            .pause_container(&name)
+            .await
+            .with_context(|| format!("pause {name}"))?;
+        Ok(())
+    }
+
+    async fn stop(&self, tier: &str) -> Result<()> {
+        let name = container_name(tier);
+        let opts = StopContainerOptionsBuilder::default().t(10).build();
+        self.docker
+            .stop_container(&name, Some(opts))
+            .await
+            .with_context(|| format!("stop {name}"))?;
+        Ok(())
+    }
+
+    async fn destroy(&self, tier: &str) -> Result<()> {
+        let name = container_name(tier);
+        let opts = RemoveContainerOptionsBuilder::default()
+            .force(true)
+            .v(true)
+            .build();
+        match self.docker.remove_container(&name, Some(opts)).await {
+            Ok(()) => Ok(()),
+            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("remove {name}")),
+        }
+    }
+
+    async fn tier_state(&self, tier: &str) -> Result<TierState> {
+        let name = container_name(tier);
+        match self
+            .docker
+            .inspect_container(&name, None::<bollard::query_parameters::InspectContainerOptions>)
+            .await
+        {
+            Ok(resp) => {
+                let status = resp
+                    .state
+                    .and_then(|s| s.status)
+                    .unwrap_or(ContainerStateStatusEnum::EMPTY);
+                Ok(map_state(status))
+            }
+            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => {
+                Ok(TierState::NotCreated)
+            }
+            Err(e) => Err(e).with_context(|| format!("inspect {name}")),
+        }
+    }
+
+    async fn list_tiers(&self) -> Result<Vec<TierInfo>> {
+        let mut filters = HashMap::new();
+        filters.insert(
+            "label".to_string(),
+            vec![format!("{MANAGED_BY_LABEL}={MANAGED_BY_VALUE}")],
+        );
+        let opts = ListContainersOptionsBuilder::default()
+            .all(true)
+            .filters(&filters)
+            .build();
+        let containers = self
+            .docker
+            .list_containers(Some(opts))
+            .await
+            .context("list cbox containers")?;
+
+        let mut out = Vec::with_capacity(containers.len());
+        for c in containers {
+            let labels = c.labels.unwrap_or_default();
+            let Some(tier) = labels.get(TIER_LABEL).cloned() else {
+                continue;
+            };
+            let status = c
+                .state
+                .map(map_summary_state)
+                .unwrap_or(TierState::NotCreated);
+            out.push(TierInfo {
+                tier,
+                state: status,
+                backend: BACKEND_NAME.to_string(),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn endpoint(&self, _tier: &str) -> Result<Option<TierEndpoint>> {
+        // Phase 2 wires SSH endpoint discovery from the running container's
+        // exposed ports. For Phase 1 this is intentionally absent.
+        Ok(None)
+    }
+}
+
+async fn create_container(
+    docker: &Docker,
+    tier: &str,
+    config: &TierRunConfig,
+) -> Result<()> {
+    let name = container_name(tier);
+    let opts = CreateContainerOptionsBuilder::default().name(&name).build();
+
+    let env: Vec<String> = config
+        .env
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+
+    let mut labels = HashMap::new();
+    labels.insert(MANAGED_BY_LABEL.to_string(), MANAGED_BY_VALUE.to_string());
+    labels.insert(TIER_LABEL.to_string(), tier.to_string());
+
+    let host_config = HostConfig {
+        privileged: Some(config.privileged),
+        network_mode: Some(network_mode_str(config.network_mode).to_string()),
+        binds: Some(binds_for(&config.mounts)),
+        ..Default::default()
+    };
+
+    let body = ContainerCreateBody {
+        image: Some(config.image.clone()),
+        env: Some(env),
+        labels: Some(labels),
+        host_config: Some(host_config),
+        networking_config: Some(NetworkingConfig::default()),
+        ..Default::default()
+    };
+
+    docker
+        .create_container(Some(opts), body)
+        .await
+        .with_context(|| format!("create {name}"))?;
+    Ok(())
+}
+
+fn binds_for(mounts: &[Mount]) -> Vec<String> {
+    mounts
+        .iter()
+        .filter_map(|m| match &m.source {
+            MountSource::HostPath(p) => {
+                let mode = if m.read_only { ":ro" } else { "" };
+                Some(format!(
+                    "{}:{}{}",
+                    p.display(),
+                    m.target.display(),
+                    mode,
+                ))
+            }
+            // Named volumes will be encoded into ContainerCreateBody.mounts
+            // when Phase 2 needs them — bind syntax is enough today.
+            MountSource::Volume(_) => None,
+        })
+        .collect()
+}
+
+fn network_mode_str(mode: NetworkMode) -> &'static str {
+    match mode {
+        NetworkMode::Bridge => "bridge",
+        NetworkMode::None => "none",
+    }
+}
+
+fn map_state(status: ContainerStateStatusEnum) -> TierState {
+    match status {
+        ContainerStateStatusEnum::RUNNING | ContainerStateStatusEnum::RESTARTING => {
+            TierState::Running
+        }
+        ContainerStateStatusEnum::PAUSED => TierState::Paused,
+        ContainerStateStatusEnum::CREATED
+        | ContainerStateStatusEnum::EXITED
+        | ContainerStateStatusEnum::DEAD
+        | ContainerStateStatusEnum::REMOVING
+        | ContainerStateStatusEnum::STOPPING
+        | ContainerStateStatusEnum::EMPTY => TierState::Stopped,
+    }
+}
+
+fn map_summary_state(status: ContainerSummaryStateEnum) -> TierState {
+    match status {
+        ContainerSummaryStateEnum::RUNNING | ContainerSummaryStateEnum::RESTARTING => {
+            TierState::Running
+        }
+        ContainerSummaryStateEnum::PAUSED => TierState::Paused,
+        ContainerSummaryStateEnum::CREATED
+        | ContainerSummaryStateEnum::EXITED
+        | ContainerSummaryStateEnum::DEAD
+        | ContainerSummaryStateEnum::REMOVING
+        | ContainerSummaryStateEnum::STOPPING
+        | ContainerSummaryStateEnum::EMPTY => TierState::Stopped,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn container_name_uses_tier_prefix() {
+        assert_eq!(container_name("dev"), "cbox-tier-dev");
+        assert_eq!(container_name("auto"), "cbox-tier-auto");
+    }
+
+    #[test]
+    fn binds_render_host_paths_with_ro_when_set() {
+        let mounts = vec![
+            Mount {
+                source: MountSource::HostPath("/etc/foo".into()),
+                target: "/in/foo".into(),
+                read_only: false,
+            },
+            Mount {
+                source: MountSource::HostPath("/etc/bar".into()),
+                target: "/in/bar".into(),
+                read_only: true,
+            },
+            Mount {
+                source: MountSource::Volume("data".into()),
+                target: "/in/data".into(),
+                read_only: false,
+            },
+        ];
+        let binds = binds_for(&mounts);
+        assert_eq!(binds, vec!["/etc/foo:/in/foo", "/etc/bar:/in/bar:ro"]);
+    }
+
+    #[test]
+    fn network_mode_strings() {
+        assert_eq!(network_mode_str(NetworkMode::Bridge), "bridge");
+        assert_eq!(network_mode_str(NetworkMode::None), "none");
+    }
+
+    #[test]
+    fn state_mapping() {
+        assert_eq!(map_state(ContainerStateStatusEnum::RUNNING), TierState::Running);
+        assert_eq!(map_state(ContainerStateStatusEnum::PAUSED), TierState::Paused);
+        assert_eq!(map_state(ContainerStateStatusEnum::EXITED), TierState::Stopped);
+        assert_eq!(map_state(ContainerStateStatusEnum::EMPTY), TierState::Stopped);
+        assert_eq!(map_state(ContainerStateStatusEnum::STOPPING), TierState::Stopped);
+
+        assert_eq!(
+            map_summary_state(ContainerSummaryStateEnum::RUNNING),
+            TierState::Running
+        );
+        assert_eq!(
+            map_summary_state(ContainerSummaryStateEnum::PAUSED),
+            TierState::Paused
+        );
+        assert_eq!(
+            map_summary_state(ContainerSummaryStateEnum::EXITED),
+            TierState::Stopped
+        );
+        assert_eq!(
+            map_summary_state(ContainerSummaryStateEnum::EMPTY),
+            TierState::Stopped
+        );
+    }
+}
