@@ -317,6 +317,12 @@ Autonomous sessions (`cbox run`) use container tmux — headless, no user intera
     power/settings.json
 ```
 
+`CBOX_CONFIG` overrides the default config path. Path fields inside
+`cbox.yaml` accept absolute, `~`, or paths relative to the yaml file —
+relative resolution makes `examples/full-setup/cbox.yaml` self-contained
+and usable as the end-to-end test corpus. `CBOX_BASE_DIR` overrides the
+location of the cbox `base/` Dockerfile directory.
+
 ## Implementation details
 
 **Language:** Rust. **Build:** cargo. **Install:** `cargo install --path .` or prebuilt binary.

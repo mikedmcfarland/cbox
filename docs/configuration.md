@@ -21,6 +21,21 @@ All cbox config lives at `~/.config/cbox/`:
         dev/settings.json
         power/settings.json
 
+### Path resolution
+
+Path fields in `cbox.yaml` (`environment:`, `layers.*`, mount host paths,
+`tiers.*.settings`) accept absolute paths, `~` paths, or paths relative
+to the yaml file. Relative paths make a config tree relocatable —
+`examples/full-setup/cbox.yaml` builds from any working directory
+without reaching into `$HOME`.
+
+### Overrides
+
+| Variable | Effect |
+|---|---|
+| `CBOX_CONFIG` | Path to `cbox.yaml`. Overrides the default `~/.config/cbox/cbox.yaml`. |
+| `CBOX_BASE_DIR` | Path to the cbox `base/` directory (the foundation image source). Defaults to `./base`, then `<bin>/base`, then `<bin>/../share/cbox/base`. |
+
 ## cbox.yaml
 
 Top-level fields:
