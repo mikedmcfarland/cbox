@@ -1,0 +1,28 @@
+# cbox base sshd config.
+#
+# Public-key only. Passwords and root login disabled. Authorized keys
+# come from ~cbox/.ssh/authorized_keys, injected at runtime by cbox.
+
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+PermitRootLogin no
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+
+PubkeyAuthentication yes
+AuthorizedKeysFile %h/.ssh/authorized_keys
+
+# Forward TERM + locale so tmux/dtach behave like a normal shell.
+AcceptEnv LANG LC_*
+PrintMotd no
+
+# Allow client-side OSC 52 clipboard passthrough (plan.md §Host tmux).
+AllowTcpForwarding yes
+X11Forwarding no
+
+Subsystem sftp /usr/lib/openssh/sftp-server
