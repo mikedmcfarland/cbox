@@ -261,13 +261,8 @@ fn pack_context(dir: &Path) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn append_dir_entry<W: Write>(
-    tar: &mut tar::Builder<W>,
-    path: &Path,
-    rel: &Path,
-) -> Result<()> {
-    let metadata =
-        std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+fn append_dir_entry<W: Write>(tar: &mut tar::Builder<W>, path: &Path, rel: &Path) -> Result<()> {
+    let metadata = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
     let mut header = tar::Header::new_gnu();
     header.set_metadata(&metadata);
     header.set_entry_type(tar::EntryType::Directory);
@@ -278,13 +273,8 @@ fn append_dir_entry<W: Write>(
     Ok(())
 }
 
-fn append_file_entry<W: Write>(
-    tar: &mut tar::Builder<W>,
-    path: &Path,
-    rel: &Path,
-) -> Result<()> {
-    let mut f =
-        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+fn append_file_entry<W: Write>(tar: &mut tar::Builder<W>, path: &Path, rel: &Path) -> Result<()> {
+    let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let metadata = f.metadata()?;
     // `metadata.len()` is u64; on 32-bit targets a >4 GiB file would
     // silently truncate via `as usize`. Fail loudly instead — a build

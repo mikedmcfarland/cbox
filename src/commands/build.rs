@@ -51,8 +51,8 @@ pub async fn run(tier: Option<String>, no_cache: bool) -> Result<()> {
         })?;
 
     for t in &tiers {
-        let plan = TierBuildPlan::from_config(&cfg, t)
-            .with_context(|| format!("plan tier {t:?}"))?;
+        let plan =
+            TierBuildPlan::from_config(&cfg, t).with_context(|| format!("plan tier {t:?}"))?;
         builder
             .build_tier(&plan.tier, &plan.layers)
             .await
