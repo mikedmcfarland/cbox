@@ -6,6 +6,7 @@ mod build;
 mod cli;
 mod commands;
 mod config;
+mod keys;
 
 use cli::{Cli, Command};
 

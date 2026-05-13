@@ -4,7 +4,9 @@
 # Order of operations (plan.md §Base image):
 #   1. Generate sshd host keys on first boot.
 #   2. Ensure /run/cbox exists and is owned by the cbox user.
-#   3. exec into supervisord (or whatever was passed as CMD), which keeps
+#   3. Materialise /home/cbox/.ssh/authorized_keys from $CBOX_AUTHORIZED_KEYS
+#      (set by cbox at container create time).
+#   4. exec into supervisord (or whatever was passed as CMD), which keeps
 #      dockerd + sshd alive for the lifetime of the container and runs
 #      /cbox/init.d/*.sh as a one-shot once dockerd is reachable.
 #
@@ -35,7 +37,18 @@ mkdir -p /run/cbox
 chown cbox:cbox /run/cbox
 chmod 0775 /run/cbox
 
-# 3. Hand off to CMD (supervisord by default). supervisord runs dockerd,
+# 3. authorized_keys for the cbox user. Written from $CBOX_AUTHORIZED_KEYS,
+# then unset before exec so it doesn't linger in supervisord's environment
+# (visible to anyone with sudo inside the container).
+if [ -n "${CBOX_AUTHORIZED_KEYS:-}" ]; then
+    install -d -m 0700 -o cbox -g cbox /home/cbox/.ssh
+    printf '%s\n' "$CBOX_AUTHORIZED_KEYS" > /home/cbox/.ssh/authorized_keys
+    chown cbox:cbox /home/cbox/.ssh/authorized_keys
+    chmod 0600 /home/cbox/.ssh/authorized_keys
+fi
+unset CBOX_AUTHORIZED_KEYS
+
+# 4. Hand off to CMD (supervisord by default). supervisord runs dockerd,
 # sshd, and the cbox-init one-shot (which gates /cbox/init.d/*.sh on
 # dockerd readiness).
 exec "$@"
