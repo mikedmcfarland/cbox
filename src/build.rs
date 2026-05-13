@@ -17,9 +17,13 @@
 //! ## Build context
 //!
 //! Bollard's `/build` endpoint takes a tar of the build context. We pack
-//! the directory in memory (Dockerfiles are small) rather than streaming
-//! from disk; this keeps the implementation synchronous up to the bollard
-//! call and avoids tempfiles.
+//! the directory in memory rather than streaming from disk: keeps the
+//! implementation simple and avoids tempfiles. Typical cbox build
+//! contexts (the bundled `base/`, a user environment Dockerfile, a
+//! handful of layer dirs) are tiny — single-digit MB at most. If/when
+//! contexts grow large enough to matter, switch to a streaming
+//! `http_body::Body` driven off `walkdir` (the walk is already in
+//! place); the rest of the pipeline doesn't care.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -30,6 +34,7 @@ use bollard::Docker;
 use bollard::query_parameters::BuildImageOptionsBuilder;
 use bytes::Bytes;
 use futures_util::StreamExt;
+use walkdir::WalkDir;
 
 use crate::config::Config;
 
@@ -219,62 +224,80 @@ fn split_tag(image: &str) -> (&str, &str) {
 
 /// Tar a directory into an in-memory build context.
 ///
-/// Symlinks are followed (we copy the target's contents); special files
-/// are skipped. Files are added with paths relative to `dir` so the
-/// `Dockerfile` ends up at the root of the context.
+/// Walks `dir` with `walkdir`, which:
+///   - sorts entries by file name at every level for byte-stable output
+///     across machines (Docker's build-context hash depends on this);
+///   - follows symlinks, including symlinks-to-directories (a common
+///     case for dotfile-style layer dirs);
+///   - reports empty directories so Dockerfiles that `COPY` an empty
+///     directory still see it.
+///
+/// Special files (sockets, fifos, block/char devices) are skipped —
+/// they have no meaning inside a Docker build context.
 fn pack_context(dir: &Path) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     {
         let mut tar = tar::Builder::new(&mut buf);
-        tar.follow_symlinks(true);
-        append_dir_recursive(&mut tar, dir, dir)?;
+        for entry in WalkDir::new(dir).follow_links(true).sort_by_file_name() {
+            let entry = entry.with_context(|| format!("walk {}", dir.display()))?;
+            let path = entry.path();
+            // Skip the root itself; we only want its contents.
+            if path == dir {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(dir)
+                .map_err(|e| anyhow!("strip_prefix: {e}"))?;
+            let ft = entry.file_type();
+            if ft.is_dir() {
+                append_dir_entry(&mut tar, path, rel)?;
+            } else if ft.is_file() {
+                append_file_entry(&mut tar, path, rel)?;
+            }
+            // Skip sockets, fifos, etc.
+        }
         tar.finish().context("finalize tar")?;
     }
     Ok(buf)
 }
 
-fn append_dir_recursive<W: Write>(
+fn append_dir_entry<W: Write>(
     tar: &mut tar::Builder<W>,
-    root: &Path,
-    dir: &Path,
+    path: &Path,
+    rel: &Path,
 ) -> Result<()> {
-    // Sort entries so the produced tar is byte-identical across
-    // filesystems with different `readdir` orders. This makes Docker's
-    // build-context hash deterministic and preserves layer-cache hits
-    // across machines and CI runs.
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .with_context(|| format!("read {}", dir.display()))?
-        .collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let metadata =
+        std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    let mut header = tar::Header::new_gnu();
+    header.set_metadata(&metadata);
+    header.set_entry_type(tar::EntryType::Directory);
+    header.set_size(0);
+    header.set_cksum();
+    tar.append_data(&mut header, rel, std::io::empty())
+        .with_context(|| format!("append dir {}", rel.display()))?;
+    Ok(())
+}
 
-    for entry in entries {
-        let path = entry.path();
-        let rel = path
-            .strip_prefix(root)
-            .map_err(|e| anyhow!("strip_prefix: {e}"))?
-            .to_path_buf();
-        let ft = entry.file_type()?;
-
-        if ft.is_dir() {
-            append_dir_recursive(tar, root, &path)?;
-        } else if ft.is_file() || ft.is_symlink() {
-            let mut f =
-                std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
-            let metadata = f.metadata()?;
-            let mut data = Vec::with_capacity(metadata.len() as usize);
-            f.read_to_end(&mut data)?;
-            let mut header = tar::Header::new_gnu();
-            header.set_metadata(&metadata);
-            // For symlinks followed via File::open, metadata.len() is the
-            // symlink target's size — set_metadata already used it, so we
-            // don't override. For regular files the data length equals
-            // metadata.len() too.
-            header.set_cksum();
-            tar.append_data(&mut header, &rel, data.as_slice())
-                .with_context(|| format!("append {}", rel.display()))?;
-        }
-        // Skip sockets, fifos, etc. — irrelevant for build contexts.
-    }
+fn append_file_entry<W: Write>(
+    tar: &mut tar::Builder<W>,
+    path: &Path,
+    rel: &Path,
+) -> Result<()> {
+    let mut f =
+        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let metadata = f.metadata()?;
+    // `metadata.len()` is u64; on 32-bit targets a >4 GiB file would
+    // silently truncate via `as usize`. Fail loudly instead — a build
+    // context file that large is almost certainly a mistake.
+    let cap = usize::try_from(metadata.len())
+        .with_context(|| format!("file {} is too large to pack in memory", path.display()))?;
+    let mut data = Vec::with_capacity(cap);
+    f.read_to_end(&mut data)?;
+    let mut header = tar::Header::new_gnu();
+    header.set_metadata(&metadata);
+    header.set_cksum();
+    tar.append_data(&mut header, rel, data.as_slice())
+        .with_context(|| format!("append {}", rel.display()))?;
     Ok(())
 }
 
@@ -348,6 +371,53 @@ mod tests {
             .collect();
         assert!(names.contains(&"Dockerfile".to_string()), "{names:?}");
         assert!(names.contains(&"sub/file.txt".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn pack_context_preserves_empty_dirs() {
+        // Dockerfiles that `COPY emptydir/ ./emptydir/` rely on the dir
+        // showing up in the build context even when it has no files.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Dockerfile"), b"FROM scratch\n").unwrap();
+        std::fs::create_dir(tmp.path().join("emptydir")).unwrap();
+
+        let bytes = pack_context(tmp.path()).unwrap();
+        let mut ar = tar::Archive::new(bytes.as_slice());
+        let mut saw_empty_dir = false;
+        for entry in ar.entries().unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path().unwrap().display().to_string();
+            if path == "emptydir" || path == "emptydir/" {
+                assert_eq!(entry.header().entry_type(), tar::EntryType::Directory);
+                saw_empty_dir = true;
+            }
+        }
+        assert!(saw_empty_dir, "empty dir missing from tar");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_context_follows_symlink_to_dir() {
+        // Dotfile-style setups often expose a directory via a symlink.
+        // The previous hand-rolled walk treated such symlinks as files
+        // and failed on the EISDIR returned by `File::open`.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Dockerfile"), b"FROM scratch\n").unwrap();
+        std::fs::create_dir(tmp.path().join("real")).unwrap();
+        std::fs::write(tmp.path().join("real/inside.txt"), b"hello").unwrap();
+        std::os::unix::fs::symlink("real", tmp.path().join("link")).unwrap();
+
+        let bytes = pack_context(tmp.path()).unwrap();
+        let mut ar = tar::Archive::new(bytes.as_slice());
+        let names: Vec<String> = ar
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().display().to_string())
+            .collect();
+        assert!(
+            names.contains(&"link/inside.txt".to_string()),
+            "symlink-to-dir contents missing: {names:?}"
+        );
     }
 
     #[test]
