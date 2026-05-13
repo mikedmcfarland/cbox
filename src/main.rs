@@ -7,6 +7,7 @@ mod cli;
 mod commands;
 mod config;
 mod keys;
+mod workspace;
 
 use cli::{Cli, Command};
 
