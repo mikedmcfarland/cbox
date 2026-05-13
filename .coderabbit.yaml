@@ -1,0 +1,35 @@
+language: en-US
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!target/**"
+    - "!**/*.lock"
+  path_instructions:
+    - path: "src/**/*.rs"
+      instructions: |
+        Rust code. Project uses async (tokio current_thread), bollard for
+        Docker, clap derive for CLI. Flag synchronous I/O in async fns,
+        unwrap/panic in library code, and missing error context. Don't
+        nit on style — rustfmt and clippy already enforce that.
+    - path: "docs/adr/**/*.md"
+      instructions: |
+        Architecture Decision Records. Treat as immutable history once
+        merged. Flag edits that change the *decision* (vs clarifying it)
+        and suggest a new ADR instead.
+    - path: "docs/plans/*.md"
+      instructions: |
+        Living design spec. Should stay in sync with ADRs and code.
+        Flag drift between plan claims and actual src/ layout.
+
+chat:
+  auto_reply: true

@@ -7,6 +7,15 @@ Each tier is a Docker container with its own network, tokens, and tool
 restrictions. You get hands-off autonomous runs without risking your host,
 and interactive sessions that feel like home.
 
+## Prerequisites
+
+- Rust ≥ 1.85 (edition 2024) — `rustup` recommended
+- [`just`](https://github.com/casey/just)
+- A running Docker daemon that supports `--privileged` containers
+  (Docker Desktop, Colima, or OrbStack on macOS; native daemon on Linux).
+  Tier instances run DinD inside privileged containers — see
+  [ADR 001](docs/adr/001-docker-over-tart.md).
+
 ## Install
 
     cargo install --path .
@@ -18,7 +27,12 @@ Or build and copy the binary:
 
 ## Quick start
 
-    # Build your dev tier image (one-time)
+    # First time: copy the sample config to ~/.config/cbox/, or skip the
+    # copy and point CBOX_CONFIG at the in-tree example to try it out:
+    #     export CBOX_CONFIG=$PWD/examples/full-setup/cbox.yaml
+
+    # Build your dev tier image (one-time; produces ~1.9 GB of layered
+    # images: cbox-base → cbox-environment → per-layer stages → tier image)
     cbox build dev
 
     # Start a session from your project directory
@@ -148,6 +162,22 @@ Future backends will run tiers on remote compute (GCE, Codespaces) while
 keeping the same CLI, session model, and tiers. See
 [ADR 011](docs/adr/011-backend-abstraction.md).
 
+## Hacking on cbox
+
+The inner loop is `cargo` + `just`; Docker only enters when touching the
+backend or build pipeline.
+
+    just check        # cargo check (~1-3s incremental)
+    just lint         # clippy with -D warnings
+    just test         # unit tests (no Docker)
+    just base         # build the cbox-base image
+    just example-tier # cbox build dev against examples/full-setup/cbox.yaml
+    just integration  # cargo test -- --ignored (DinD smoke; needs example-tier)
+
+`CBOX_CONFIG` overrides the config path; `CBOX_BASE_DIR` overrides the
+location of the `base/` Dockerfile directory. See
+[CLAUDE.md](CLAUDE.md) for repo conventions and code layout.
+
 ## Roadmap
 
 **Remote backends.** GCE with Container-Optimized OS (DinD on privileged
@@ -165,6 +195,6 @@ the backend abstraction.
 
 - **[Glossary](docs/glossary.md)** — canonical vocabulary
 - **[Configuration](docs/configuration.md)** — full configuration reference
-- **[Plan](plan.md)** — design spec and rationale
+- **[Plans](docs/plans/)** — design spec and rationale
 - **[ADRs](docs/adr/)** — architectural decisions
 - **[Examples](examples/)** — copy-able starter configs
