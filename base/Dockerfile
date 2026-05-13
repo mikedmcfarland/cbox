@@ -69,8 +69,9 @@ COPY sshd_config /etc/ssh/sshd_config
 COPY daemon.json /etc/docker/daemon.json
 COPY supervisord.conf /etc/supervisor/conf.d/cbox.conf
 COPY entrypoint.sh /usr/local/bin/cbox-entrypoint
+COPY cbox-init /usr/local/bin/cbox-init
 
-RUN chmod 0755 /usr/local/bin/cbox-entrypoint
+RUN chmod 0755 /usr/local/bin/cbox-entrypoint /usr/local/bin/cbox-init
 
 EXPOSE 22
 

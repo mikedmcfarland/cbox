@@ -4,12 +4,14 @@
 # Order of operations (plan.md §Base image):
 #   1. Generate sshd host keys on first boot.
 #   2. Ensure /run/cbox exists and is owned by the cbox user.
-#   3. Run /cbox/init.d/*.sh (idempotent setup: MCP registration, etc.)
-#   4. exec into supervisord (or whatever was passed as CMD), which keeps
-#      dockerd + sshd alive for the lifetime of the container.
+#   3. exec into supervisord (or whatever was passed as CMD), which keeps
+#      dockerd + sshd alive for the lifetime of the container and runs
+#      /cbox/init.d/*.sh as a one-shot once dockerd is reachable.
 #
 # dockerd itself is started by supervisord, not here. That keeps the
 # "supervised by PID 1" invariant — if dockerd dies it gets restarted.
+# init.d scripts live in the cbox-init supervisord program so they can
+# depend on dockerd being up (some scripts will run `docker ...`).
 
 set -euo pipefail
 
@@ -33,15 +35,7 @@ mkdir -p /run/cbox
 chown cbox:cbox /run/cbox
 chmod 0775 /run/cbox
 
-# 3. Run init scripts. Sorted, *.sh only, fail fast on errors.
-if [ -d /cbox/init.d ]; then
-    for script in /cbox/init.d/*.sh; do
-        [ -e "$script" ] || continue
-        echo "cbox: running $script" >&2
-        # shellcheck disable=SC1090
-        bash "$script"
-    done
-fi
-
-# 4. Hand off to CMD (supervisord by default).
+# 3. Hand off to CMD (supervisord by default). supervisord runs dockerd,
+# sshd, and the cbox-init one-shot (which gates /cbox/init.d/*.sh on
+# dockerd readiness).
 exec "$@"

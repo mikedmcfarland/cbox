@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Run /cbox/init.d/*.sh once after dockerd is ready.
+#
+# Started by supervisord as a one-shot program (autorestart=false,
+# exitcodes=0). Lives in its own script so the supervisord stanza stays
+# declarative.
+#
+# init.d contract:
+#   - Scripts MUST be idempotent. cbox-init re-runs on every container
+#     start, so anything non-idempotent (e.g. `claude mcp add`) needs to
+#     check existing state first.
+#   - Scripts run as root with passwordless sudo to `cbox` available.
+#   - Scripts run after dockerd is reachable on /var/run/docker.sock, so
+#     inner `docker ...` calls are safe.
+#   - Failure of any script aborts the run (set -e). Supervisord will
+#     report a FATAL state — fix the script and restart the container.
+
+set -euo pipefail
+
+# Wait for dockerd to accept API requests. supervisord brings dockerd up
+# in parallel; `docker info` is the canonical readiness probe.
+deadline=$(( $(date +%s) + 60 ))
+until docker info >/dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "cbox-init: dockerd did not become ready within 60s" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+if [ -d /cbox/init.d ]; then
+    for script in /cbox/init.d/*.sh; do
+        [ -e "$script" ] || continue
+        echo "cbox-init: running $script" >&2
+        # shellcheck disable=SC1090
+        bash "$script"
+    done
+fi
