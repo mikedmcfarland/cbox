@@ -7,7 +7,6 @@
 //! (per plan §Session tracking).
 
 // Consumed by the attach command in a later commit.
-#![allow(dead_code)]
 
 use std::path::Path;
 

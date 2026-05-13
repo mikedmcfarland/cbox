@@ -8,7 +8,6 @@
 //! interface, not the host key.
 
 // Used by the session module and the attach command landing in later commits.
-#![allow(dead_code)]
 
 use std::path::PathBuf;
 

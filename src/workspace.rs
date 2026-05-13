@@ -12,7 +12,6 @@
 //! container to be auth'd for git remotes.
 
 // Wired by the attach command in a later Phase 2 commit.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

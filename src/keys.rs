@@ -7,7 +7,6 @@
 //! desktop Linux).
 
 // Wired by the attach command + backend in later Phase 2 commits.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

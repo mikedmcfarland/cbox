@@ -6,7 +6,6 @@
 //! never collides with the primary window.
 
 // Consumed by the attach command in a later commit.
-#![allow(dead_code)]
 
 use std::process::Stdio;
 
