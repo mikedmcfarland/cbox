@@ -36,12 +36,27 @@ pub async fn run(tier: Option<String>, no_cache: bool) -> Result<()> {
     // Base + environment are shared across tiers. Build them once at the
     // top of the run; bollard's layer cache makes a no-op rebuild cheap
     // when nothing has changed.
-    builder.build_base(&base_dir).await?;
-    builder.build_environment(cfg.environment.as_path()).await?;
+    builder
+        .build_base(&base_dir)
+        .await
+        .with_context(|| format!("build base image from {}", base_dir.display()))?;
+    builder
+        .build_environment(cfg.environment.as_path())
+        .await
+        .with_context(|| {
+            format!(
+                "build environment image from {}",
+                cfg.environment.as_path().display()
+            )
+        })?;
 
     for t in &tiers {
-        let plan = TierBuildPlan::from_config(&cfg, t)?;
-        builder.build_tier(&plan.tier, &plan.layers).await?;
+        let plan = TierBuildPlan::from_config(&cfg, t)
+            .with_context(|| format!("plan tier {t:?}"))?;
+        builder
+            .build_tier(&plan.tier, &plan.layers)
+            .await
+            .with_context(|| format!("build tier image {:?}", plan.tier))?;
     }
 
     eprintln!("==> built {} tier image(s)", tiers.len());

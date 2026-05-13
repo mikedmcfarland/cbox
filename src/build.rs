@@ -238,8 +238,16 @@ fn append_dir_recursive<W: Write>(
     root: &Path,
     dir: &Path,
 ) -> Result<()> {
-    for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
-        let entry = entry?;
+    // Sort entries so the produced tar is byte-identical across
+    // filesystems with different `readdir` orders. This makes Docker's
+    // build-context hash deterministic and preserves layer-cache hits
+    // across machines and CI runs.
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .with_context(|| format!("read {}", dir.display()))?
+        .collect::<std::io::Result<_>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in entries {
         let path = entry.path();
         let rel = path
             .strip_prefix(root)
@@ -253,11 +261,14 @@ fn append_dir_recursive<W: Write>(
             let mut f =
                 std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
             let metadata = f.metadata()?;
-            let mut header = tar::Header::new_gnu();
-            header.set_metadata(&metadata);
             let mut data = Vec::with_capacity(metadata.len() as usize);
             f.read_to_end(&mut data)?;
-            header.set_size(data.len() as u64);
+            let mut header = tar::Header::new_gnu();
+            header.set_metadata(&metadata);
+            // For symlinks followed via File::open, metadata.len() is the
+            // symlink target's size — set_metadata already used it, so we
+            // don't override. For regular files the data length equals
+            // metadata.len() too.
             header.set_cksum();
             tar.append_data(&mut header, &rel, data.as_slice())
                 .with_context(|| format!("append {}", rel.display()))?;
