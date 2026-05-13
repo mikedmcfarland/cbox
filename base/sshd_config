@@ -21,7 +21,10 @@ AuthorizedKeysFile %h/.ssh/authorized_keys
 AcceptEnv LANG LC_*
 PrintMotd no
 
-# Allow client-side OSC 52 clipboard passthrough (plan.md §Host tmux).
+# Port forwarding is needed for VSCode Remote-SSH (which tunnels its
+# server port) and for `ssh -L` access to services running inside the
+# tier. OSC 52 clipboard passthrough is in-band terminal escapes and
+# does *not* require this — see plan.md §Host tmux.
 AllowTcpForwarding yes
 X11Forwarding no
 

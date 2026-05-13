@@ -63,11 +63,11 @@ pub struct TierEndpoint {
     pub ssh_options: Vec<(String, String)>,
 }
 
-/// Lifecycle state of a tier instance.
+/// Lifecycle state of a tier instance, as the backend sees it.
 ///
-/// `Idle` is a *predicate* (running with no alive sessions), not a true
-/// state — but the backend can report it directly because socket
-/// inspection happens in the implementation.
+/// "Idle" (running with no alive sessions) is a predicate derived above
+/// the trait by inspecting session sockets in `/run/cbox/`; it is not a
+/// `TierState` variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TierState {
     NotCreated,

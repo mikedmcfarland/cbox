@@ -2,12 +2,14 @@
 //!
 //! Tier instances are long-running Docker containers identified by labels:
 //! `managed-by=cbox` and `cbox.tier=<name>`. The container name is
-//! `cbox-tier-<name>`. State (`.claude.json`, workspaces, Docker image
-//! cache) lives on a named volume per tier.
+//! `cbox-tier-<name>`.
 //!
-//! Phase 1 wires the bollard client and lifecycle methods. Sessions and
-//! SSH endpoint discovery come in Phase 2; [`endpoint`](LocalDockerBackend::endpoint)
-//! currently returns `None` even for running instances.
+//! Phase 1 wires the bollard client and lifecycle methods, and translates
+//! `Mount` values into host-path bind mounts only — named-volume plumbing
+//! (for `.claude.json`, workspaces, Docker image cache) lands in Phase 2
+//! alongside session machinery. SSH endpoint discovery is also Phase 2;
+//! [`endpoint`](LocalDockerBackend::endpoint) currently returns `None` even
+//! for running instances.
 
 // Phase 1 foundation: label constants and helpers are consumed by Phase 2
 // session machinery. Drop this when consumers land.
@@ -383,10 +385,13 @@ mod tests {
         );
     }
 
-    /// Smoke test: build an example tier image, start it via the
-    /// [`Backend`] trait, exec `docker version` inside, then destroy.
-    /// Verifies the Phase 1 deliverable ("can build a tier image,
-    /// verify DinD works inside it") without raw `docker run` calls.
+    /// Smoke test: against a pre-built example tier image, start a tier
+    /// via the [`Backend`] trait, exec `docker version` inside, then
+    /// destroy. Verifies the Phase 1 deliverable ("can build a tier
+    /// image, verify DinD works inside it") without raw `docker run`
+    /// calls. The image build itself is exercised by `just integration`
+    /// (which runs `cargo run -- build dev` against the example config
+    /// first); this test panics if that image is missing.
     ///
     /// Ignored by default; run with `just integration`. The test is
     /// idempotent — it cleans up any prior `cbox-tier-dind-test`

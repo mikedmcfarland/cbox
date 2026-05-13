@@ -41,7 +41,7 @@ the `Backend` trait impl, image build pipeline, or session machinery.
 
 ## Code organisation
 
-```
+```text
 src/
   main.rs              entrypoint; #[tokio::main(flavor = "current_thread")]
   cli.rs               clap derive definitions
