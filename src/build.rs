@@ -287,7 +287,13 @@ impl TierBuildPlan {
             let dir = cfg
                 .layers
                 .get(&name)
-                .ok_or_else(|| anyhow!("layer {name:?} not declared under layers:"))?
+                .ok_or_else(|| {
+                    let known: Vec<&str> = cfg.layers.keys().map(String::as_str).collect();
+                    anyhow!(
+                        "layer {name:?} not declared under `layers` (known: {})",
+                        known.join(", ")
+                    )
+                })?
                 .as_path()
                 .to_path_buf();
             layers.push((name, dir));

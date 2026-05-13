@@ -271,7 +271,11 @@ impl Config {
         if let Some(t) = &self.default_tier
             && !self.tiers.contains_key(t)
         {
-            bail!("default_tier {t:?} is not defined under tiers:");
+            let known: Vec<&str> = self.tiers.keys().map(String::as_str).collect();
+            bail!(
+                "default_tier {t:?} is not defined under `tiers` (known: {})",
+                known.join(", ")
+            );
         }
 
         for (proj_name, proj) in &self.projects {
