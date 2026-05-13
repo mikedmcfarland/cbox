@@ -6,13 +6,13 @@ Project-specific guidance for Claude Code working in this repo.
 
 cbox — Rust binary that runs Claude Code sessions in isolated Docker
 containers. Standalone tool (ADR 008); user config lives at
-`~/.config/cbox/`. Design and rationale: `plan.md`, `docs/`, `examples/`.
+`~/.config/cbox/`. Design and rationale: `docs/plans/`, `docs/`, `examples/`.
 
 ## Workflow
 
 - **Branch per phase.** One feature branch per implementation phase from
-  `plan.md` (`phase-1-foundation`, `phase-2-core-lifecycle`, ...). Open a
-  PR per phase against `main`.
+  `docs/plans/` (`phase-1-foundation`, `phase-2-core-lifecycle`, ...).
+  Open a PR per phase against `main`.
 - **Incremental commits.** Inside a phase, commit per logical unit
   (scaffold, CLI, config parsing, backend trait, etc.) — not one giant
   end-of-phase commit.
@@ -64,7 +64,7 @@ filesystem or subprocesses inside async fns.
 
 ## Things to keep in sync
 
-- `plan.md` — design spec; update when an architectural decision shifts.
+- `docs/plans/` — design spec; update when an architectural decision shifts.
 - `docs/adr/` — add a new ADR for any non-trivial design change rather
   than editing an old one (unless it's a clarification).
 - `docs/glossary.md` — vocabulary; add a row when a new noun/verb

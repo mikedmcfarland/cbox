@@ -195,6 +195,6 @@ the backend abstraction.
 
 - **[Glossary](docs/glossary.md)** — canonical vocabulary
 - **[Configuration](docs/configuration.md)** — full configuration reference
-- **[Plan](plan.md)** — design spec and rationale
+- **[Plans](docs/plans/)** — design spec and rationale
 - **[ADRs](docs/adr/)** — architectural decisions
 - **[Examples](examples/)** — copy-able starter configs

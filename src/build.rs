@@ -1,6 +1,6 @@
 //! Image build pipeline (ADR 011: lives outside the [`Backend`] trait).
 //!
-//! The pipeline stacks plain Dockerfiles in three layers per plan.md
+//! The pipeline stacks plain Dockerfiles in three layers per docs/plans/v1.md
 //! §Image layers:
 //!
 //! ```text
