@@ -14,15 +14,15 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Run { name, project, prompt }) => {
-            commands::run::run(name, project, prompt, cli.tier).await
-        }
+        Some(Command::Run {
+            name,
+            project,
+            prompt,
+        }) => commands::run::run(name, project, prompt, cli.tier).await,
         Some(Command::Exec { name, cmd }) => commands::exec::run(name, cmd).await,
         Some(Command::Auth { tier }) => commands::auth::run(tier).await,
         Some(Command::List) => commands::list::run().await,
-        Some(Command::Destroy { name, workspace }) => {
-            commands::destroy::run(name, workspace).await
-        }
+        Some(Command::Destroy { name, workspace }) => commands::destroy::run(name, workspace).await,
         Some(Command::Build { tier, no_cache }) => commands::build::run(tier, no_cache).await,
         Some(Command::Tier { op }) => commands::tier::run(op).await,
         Some(Command::Cleanup) => commands::cleanup::run().await,

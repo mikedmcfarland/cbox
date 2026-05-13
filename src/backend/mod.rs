@@ -7,6 +7,10 @@
 //! The implicit `local` backend (Docker) is the only implementation today;
 //! see [`local_docker`].
 
+// Phase 1 foundation: the trait + value types are the API surface for
+// Phase 2+ session/lifecycle code. Drop this when consumers land.
+#![allow(dead_code)]
+
 pub mod local_docker;
 
 use std::path::PathBuf;
@@ -27,11 +31,7 @@ pub trait Backend: Send + Sync {
     /// Ensure the tier's instance is running. Start or resume as needed.
     /// Credentials (already resolved on the host) are passed via
     /// `config.env`.
-    async fn ensure_running(
-        &self,
-        tier: &str,
-        config: &TierRunConfig,
-    ) -> Result<TierEndpoint>;
+    async fn ensure_running(&self, tier: &str, config: &TierRunConfig) -> Result<TierEndpoint>;
 
     /// Pause the tier instance (preserve state at near-zero cost).
     /// Local Docker: `docker pause` (instant). GCE: VM stop (~30s restart).

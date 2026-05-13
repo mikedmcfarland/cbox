@@ -9,6 +9,10 @@
 //! SSH endpoint discovery come in Phase 2; [`endpoint`](LocalDockerBackend::endpoint)
 //! currently returns `None` even for running instances.
 
+// Phase 1 foundation: label constants and helpers are consumed by Phase 2
+// session machinery. Drop this when consumers land.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
@@ -50,8 +54,8 @@ impl LocalDockerBackend {
     /// Connect to the local Docker daemon using platform defaults
     /// (Unix socket on macOS/Linux, named pipe on Windows).
     pub fn new() -> Result<Self> {
-        let docker = Docker::connect_with_local_defaults()
-            .context("connect to local Docker daemon")?;
+        let docker =
+            Docker::connect_with_local_defaults().context("connect to local Docker daemon")?;
         Ok(Self { docker })
     }
 
@@ -64,11 +68,7 @@ impl LocalDockerBackend {
 
 #[async_trait]
 impl Backend for LocalDockerBackend {
-    async fn ensure_running(
-        &self,
-        tier: &str,
-        config: &TierRunConfig,
-    ) -> Result<TierEndpoint> {
+    async fn ensure_running(&self, tier: &str, config: &TierRunConfig) -> Result<TierEndpoint> {
         let name = container_name(tier);
 
         match self.tier_state(tier).await? {
@@ -81,14 +81,20 @@ impl Backend for LocalDockerBackend {
             }
             TierState::Stopped => {
                 self.docker
-                    .start_container(&name, None::<bollard::query_parameters::StartContainerOptions>)
+                    .start_container(
+                        &name,
+                        None::<bollard::query_parameters::StartContainerOptions>,
+                    )
                     .await
                     .with_context(|| format!("start {name}"))?;
             }
             TierState::NotCreated => {
                 create_container(&self.docker, tier, config).await?;
                 self.docker
-                    .start_container(&name, None::<bollard::query_parameters::StartContainerOptions>)
+                    .start_container(
+                        &name,
+                        None::<bollard::query_parameters::StartContainerOptions>,
+                    )
                     .await
                     .with_context(|| format!("start {name}"))?;
             }
@@ -132,7 +138,9 @@ impl Backend for LocalDockerBackend {
             .build();
         match self.docker.remove_container(&name, Some(opts)).await {
             Ok(()) => Ok(()),
-            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => Ok(()),
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
             Err(e) => Err(e).with_context(|| format!("remove {name}")),
         }
     }
@@ -141,7 +149,10 @@ impl Backend for LocalDockerBackend {
         let name = container_name(tier);
         match self
             .docker
-            .inspect_container(&name, None::<bollard::query_parameters::InspectContainerOptions>)
+            .inspect_container(
+                &name,
+                None::<bollard::query_parameters::InspectContainerOptions>,
+            )
             .await
         {
             Ok(resp) => {
@@ -151,9 +162,9 @@ impl Backend for LocalDockerBackend {
                     .unwrap_or(ContainerStateStatusEnum::EMPTY);
                 Ok(map_state(status))
             }
-            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => {
-                Ok(TierState::NotCreated)
-            }
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(TierState::NotCreated),
             Err(e) => Err(e).with_context(|| format!("inspect {name}")),
         }
     }
@@ -200,19 +211,11 @@ impl Backend for LocalDockerBackend {
     }
 }
 
-async fn create_container(
-    docker: &Docker,
-    tier: &str,
-    config: &TierRunConfig,
-) -> Result<()> {
+async fn create_container(docker: &Docker, tier: &str, config: &TierRunConfig) -> Result<()> {
     let name = container_name(tier);
     let opts = CreateContainerOptionsBuilder::default().name(&name).build();
 
-    let env: Vec<String> = config
-        .env
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let env: Vec<String> = config.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
     let mut labels = HashMap::new();
     labels.insert(MANAGED_BY_LABEL.to_string(), MANAGED_BY_VALUE.to_string());
@@ -247,12 +250,7 @@ fn binds_for(mounts: &[Mount]) -> Vec<String> {
         .filter_map(|m| match &m.source {
             MountSource::HostPath(p) => {
                 let mode = if m.read_only { ":ro" } else { "" };
-                Some(format!(
-                    "{}:{}{}",
-                    p.display(),
-                    m.target.display(),
-                    mode,
-                ))
+                Some(format!("{}:{}{}", p.display(), m.target.display(), mode,))
             }
             // Named volumes will be encoded into ContainerCreateBody.mounts
             // when Phase 2 needs them — bind syntax is enough today.
@@ -346,11 +344,26 @@ mod tests {
 
     #[test]
     fn state_mapping() {
-        assert_eq!(map_state(ContainerStateStatusEnum::RUNNING), TierState::Running);
-        assert_eq!(map_state(ContainerStateStatusEnum::PAUSED), TierState::Paused);
-        assert_eq!(map_state(ContainerStateStatusEnum::EXITED), TierState::Stopped);
-        assert_eq!(map_state(ContainerStateStatusEnum::EMPTY), TierState::Stopped);
-        assert_eq!(map_state(ContainerStateStatusEnum::STOPPING), TierState::Stopped);
+        assert_eq!(
+            map_state(ContainerStateStatusEnum::RUNNING),
+            TierState::Running
+        );
+        assert_eq!(
+            map_state(ContainerStateStatusEnum::PAUSED),
+            TierState::Paused
+        );
+        assert_eq!(
+            map_state(ContainerStateStatusEnum::EXITED),
+            TierState::Stopped
+        );
+        assert_eq!(
+            map_state(ContainerStateStatusEnum::EMPTY),
+            TierState::Stopped
+        );
+        assert_eq!(
+            map_state(ContainerStateStatusEnum::STOPPING),
+            TierState::Stopped
+        );
 
         assert_eq!(
             map_summary_state(ContainerSummaryStateEnum::RUNNING),

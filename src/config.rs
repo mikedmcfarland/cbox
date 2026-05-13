@@ -5,6 +5,11 @@
 //! validation (tier → layer, tier → credential, tier → backend) lives in
 //! [`Config::validate`].
 
+// Phase 1 foundation: many config fields are deserialized for validation
+// but not yet read by consumers (sessions, credential resolution).
+// Drop this when Phase 2+ wires them up.
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -173,7 +178,9 @@ fn parse_mount(raw: &str) -> Result<MountSpec, String> {
     let options = parts.next().map(str::to_string);
 
     if host.is_empty() || container.is_empty() {
-        return Err(format!("mount string has empty host or container path: {raw:?}"));
+        return Err(format!(
+            "mount string has empty host or container path: {raw:?}"
+        ));
     }
 
     Ok(MountSpec {
@@ -191,10 +198,10 @@ impl Config {
     /// `examples/full-setup/cbox.yaml` can use relative paths and still
     /// build correctly when invoked from anywhere.
     pub fn load(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))?;
-        let mut cfg: Config = serde_yaml_bw::from_str(&raw)
-            .with_context(|| format!("parse {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let mut cfg: Config =
+            serde_yaml_bw::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         cfg.resolve_relative_paths(base);
         cfg.validate()?;
@@ -208,8 +215,7 @@ impl Config {
         if let Some(p) = std::env::var_os(CONFIG_ENV) {
             return Ok(PathBuf::from(p));
         }
-        let home = std::env::var_os("HOME")
-            .ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
+        let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
         Ok(PathBuf::from(home).join(DEFAULT_CONFIG_RELPATH))
     }
 
@@ -337,7 +343,10 @@ mod tests {
                     PathBuf::from("/home/cbox/.config/gcloud")
                 );
                 assert_eq!(mount.options.as_deref(), Some("ro"));
-                assert!(!mount.host_path.starts_with("~"), "tilde should be expanded");
+                assert!(
+                    !mount.host_path.starts_with("~"),
+                    "tilde should be expanded"
+                );
             }
             _ => panic!("gcp-viewer should be a mount credential"),
         }
@@ -435,7 +444,11 @@ tiers:
         cfg.validate().unwrap();
         assert_eq!(
             cfg.effective_layers("dev").unwrap(),
-            vec!["claude".to_string(), "python".to_string(), "node".to_string()]
+            vec![
+                "claude".to_string(),
+                "python".to_string(),
+                "node".to_string()
+            ]
         );
     }
 }

@@ -37,9 +37,7 @@ pub async fn run(tier: Option<String>, no_cache: bool) -> Result<()> {
     // top of the run; bollard's layer cache makes a no-op rebuild cheap
     // when nothing has changed.
     builder.build_base(&base_dir).await?;
-    builder
-        .build_environment(cfg.environment.as_path())
-        .await?;
+    builder.build_environment(cfg.environment.as_path()).await?;
 
     for t in &tiers {
         let plan = TierBuildPlan::from_config(&cfg, t)?;

@@ -123,11 +123,7 @@ impl<'a> ImageBuilder<'a> {
     /// `layers` is the ordered list of `(name, dockerfile_dir)` to apply
     /// on top of the environment image. Empty list is allowed — the
     /// environment image itself becomes the tier image.
-    pub async fn build_tier(
-        &self,
-        tier: &str,
-        layers: &[(String, PathBuf)],
-    ) -> Result<()> {
+    pub async fn build_tier(&self, tier: &str, layers: &[(String, PathBuf)]) -> Result<()> {
         let final_tag = tier_image_tag(tier);
         let mut prev = ENVIRONMENT_IMAGE_TAG.to_string();
 
@@ -164,8 +160,8 @@ impl<'a> ImageBuilder<'a> {
         tag: &str,
         build_args: &HashMap<String, String>,
     ) -> Result<()> {
-        let context = pack_context(dir)
-            .with_context(|| format!("tar build context at {}", dir.display()))?;
+        let context =
+            pack_context(dir).with_context(|| format!("tar build context at {}", dir.display()))?;
 
         let opts = BuildImageOptionsBuilder::default()
             .dockerfile("Dockerfile")
@@ -186,7 +182,9 @@ impl<'a> ImageBuilder<'a> {
         while let Some(msg) = stream.next().await {
             let info = msg.with_context(|| format!("build {tag}"))?;
             if let Some(detail) = info.error_detail {
-                let msg = detail.message.unwrap_or_else(|| "unknown error".to_string());
+                let msg = detail
+                    .message
+                    .unwrap_or_else(|| "unknown error".to_string());
                 bail!("docker build {tag} failed: {msg}");
             }
             if let Some(s) = info.stream {
@@ -252,8 +250,8 @@ fn append_dir_recursive<W: Write>(
         if ft.is_dir() {
             append_dir_recursive(tar, root, &path)?;
         } else if ft.is_file() || ft.is_symlink() {
-            let mut f = std::fs::File::open(&path)
-                .with_context(|| format!("open {}", path.display()))?;
+            let mut f =
+                std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
             let metadata = f.metadata()?;
             let mut header = tar::Header::new_gnu();
             header.set_metadata(&metadata);
@@ -274,6 +272,7 @@ fn append_dir_recursive<W: Write>(
 /// unit-testable without Docker.
 pub struct TierBuildPlan {
     pub tier: String,
+    #[allow(dead_code)]
     pub environment_dir: PathBuf,
     /// Ordered `(layer_name, dockerfile_dir)` to stack on the
     /// environment image.
