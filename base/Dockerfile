@@ -44,8 +44,15 @@ ENV LANG=en_US.UTF-8 \
 # Ubuntu 24.04 ships a default `ubuntu` user at UID 1000 — drop it first
 # so we can claim that UID for cbox (matches typical host user UID,
 # avoids permission churn on bind-mounted workspaces).
+#
+# `passwd -d cbox` clears the locked-by-default `!` password marker.
+# OpenSSH 9.6 (with `UsePAM no` per sshd_config) treats accounts whose
+# shadow entry starts with `!` as fully locked and rejects pubkey auth.
+# An empty password combined with `PasswordAuthentication no` keeps
+# password login disabled while allowing pubkey login.
 RUN userdel --remove ubuntu 2>/dev/null || true \
     && useradd --create-home --shell /bin/bash --uid 1000 cbox \
+    && passwd -d cbox \
     && usermod -aG docker cbox \
     && echo 'cbox ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/cbox \
     && chmod 0440 /etc/sudoers.d/cbox

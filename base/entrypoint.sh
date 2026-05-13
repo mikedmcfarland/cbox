@@ -2,10 +2,11 @@
 # cbox base entrypoint.
 #
 # Order of operations (plan.md §Base image):
-#   1. Generate sshd host keys on first boot.
-#   2. Ensure /run/cbox exists and is owned by the cbox user.
-#   3. Materialise /home/cbox/.ssh/authorized_keys from $CBOX_AUTHORIZED_KEYS
-#      (set by cbox at container create time).
+#   1. Materialise /home/cbox/.ssh/authorized_keys from $CBOX_AUTHORIZED_KEYS
+#      (set by cbox at container create time) — done *before* the sudo
+#      re-exec because sudo's default env_keep strips the env var.
+#   2. Generate sshd host keys on first boot.
+#   3. Ensure /run/cbox exists and is owned by the cbox user.
 #   4. exec into supervisord (or whatever was passed as CMD), which keeps
 #      dockerd + sshd alive for the lifetime of the container and runs
 #      /cbox/init.d/*.sh as a one-shot once dockerd is reachable.
@@ -17,13 +18,24 @@
 
 set -euo pipefail
 
+# authorized_keys must be written *before* the sudo re-exec: sudo's
+# default env_keep policy strips arbitrary env vars even with -E, so the
+# env var doesn't survive the re-exec. cbox owns /home/cbox/.ssh, so it
+# can write authorized_keys without root anyway.
+if [ -n "${CBOX_AUTHORIZED_KEYS:-}" ]; then
+    install -d -m 0700 "/home/$(id -un)/.ssh"
+    printf '%s\n' "$CBOX_AUTHORIZED_KEYS" > "/home/$(id -un)/.ssh/authorized_keys"
+    chmod 0600 "/home/$(id -un)/.ssh/authorized_keys"
+fi
+unset CBOX_AUTHORIZED_KEYS
+
 # Layers (environment, language layers) typically end with `USER cbox`
 # so subsequent COPY/RUN don't accumulate root-owned files. supervisord
 # needs root to manage processes and bind sshd on :22, so re-exec via
 # sudo if we landed here as a non-root user. cbox has NOPASSWD sudo
 # (see base/Dockerfile).
 if [ "$(id -u)" -ne 0 ]; then
-    exec sudo -E /usr/local/bin/cbox-entrypoint "$@"
+    exec sudo /usr/local/bin/cbox-entrypoint "$@"
 fi
 
 # 1. sshd host keys
@@ -37,18 +49,7 @@ mkdir -p /run/cbox
 chown cbox:cbox /run/cbox
 chmod 0775 /run/cbox
 
-# 3. authorized_keys for the cbox user. Written from $CBOX_AUTHORIZED_KEYS,
-# then unset before exec so it doesn't linger in supervisord's environment
-# (visible to anyone with sudo inside the container).
-if [ -n "${CBOX_AUTHORIZED_KEYS:-}" ]; then
-    install -d -m 0700 -o cbox -g cbox /home/cbox/.ssh
-    printf '%s\n' "$CBOX_AUTHORIZED_KEYS" > /home/cbox/.ssh/authorized_keys
-    chown cbox:cbox /home/cbox/.ssh/authorized_keys
-    chmod 0600 /home/cbox/.ssh/authorized_keys
-fi
-unset CBOX_AUTHORIZED_KEYS
-
-# 4. Hand off to CMD (supervisord by default). supervisord runs dockerd,
+# 3. Hand off to CMD (supervisord by default). supervisord runs dockerd,
 # sshd, and the cbox-init one-shot (which gates /cbox/init.d/*.sh on
 # dockerd readiness).
 exec "$@"

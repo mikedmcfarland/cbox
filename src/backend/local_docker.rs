@@ -107,9 +107,16 @@ impl Backend for LocalDockerBackend {
             }
         }
 
-        self.endpoint(tier)
-            .await?
-            .with_context(|| format!("{name} started but ssh port not yet published"))
+        // After `docker start`, NetworkSettings.Ports can briefly be empty
+        // while the daemon publishes the port. Poll for a few seconds
+        // before giving up.
+        for _ in 0..50 {
+            if let Some(ep) = self.endpoint(tier).await? {
+                return Ok(ep);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        anyhow::bail!("{name} started but ssh port never published")
     }
 
     async fn pause(&self, tier: &str) -> Result<()> {

@@ -73,11 +73,11 @@ pub async fn run(name: String, workspace: bool) -> Result<()> {
 }
 
 async fn any_sockets_left(ssh: &SshConn) -> Result<bool> {
+    // Pass the script as one ssh arg so the remote shell preserves the
+    // glob + pipe; multiple args get joined with spaces and break this.
     let output = tokio::process::Command::new("ssh")
         .args(ssh.args())
         .arg("--")
-        .arg("bash")
-        .arg("-c")
         .arg("ls /run/cbox/*.sock 2>/dev/null | head -1")
         .output()
         .await

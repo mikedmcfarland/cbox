@@ -125,26 +125,26 @@ async fn spawn_primary(
     launch: LaunchCommand,
 ) -> Result<()> {
     let inner = dtach_command(workspace, name, launch);
-    let extra = ["-t", "--", "bash", "-lc", &inner];
+    let remote = wrap_login_shell(&inner);
     if tmux::inside_tmux() {
-        let line = ssh.quoted_command_line(&extra);
+        let line = ssh.quoted_command_line(&["-t", "--", &remote]);
         tmux::create_window(&tmux::window_name(name, None), &line).await
     } else {
         eprintln!(
             "==> not inside tmux; running ssh inline. Run cbox from a host \
              tmux to keep the session detachable across SSH drops."
         );
-        run_inline(ssh, &extra).await
+        run_inline(ssh, &["-t", "--", &remote]).await
     }
 }
 
 async fn spawn_ancillary(ssh: &SshConn, name: &str, inner: &str, kind: &str) -> Result<()> {
-    let extra = ["-t", "--", "bash", "-lc", inner];
+    let remote = wrap_login_shell(inner);
     if tmux::inside_tmux() {
-        let line = ssh.quoted_command_line(&extra);
+        let line = ssh.quoted_command_line(&["-t", "--", &remote]);
         tmux::create_window(&tmux::window_name(name, Some(&ancillary_suffix(kind))), &line).await
     } else {
-        run_inline(ssh, &extra).await
+        run_inline(ssh, &["-t", "--", &remote]).await
     }
 }
 
@@ -155,7 +155,8 @@ async fn attach_inline(
     launch: LaunchCommand,
 ) -> Result<()> {
     let inner = dtach_command(workspace, name, launch);
-    run_inline(ssh, &["-t", "--", "bash", "-lc", &inner]).await
+    let remote = wrap_login_shell(&inner);
+    run_inline(ssh, &["-t", "--", &remote]).await
 }
 
 async fn run_inline(ssh: &SshConn, extra: &[&str]) -> Result<()> {
@@ -166,6 +167,14 @@ async fn run_inline(ssh: &SshConn, extra: &[&str]) -> Result<()> {
         bail!("ssh exited with {status}");
     }
     Ok(())
+}
+
+/// Wrap `inner` as `bash -lc '<inner>'` so the remote login shell sources
+/// the user's rc files (PATH for `claude`, etc.). Returned as a single
+/// string so the caller can pass it to ssh as one arg — ssh joins multi-
+/// arg remote commands with spaces, which would break `bash -lc`.
+fn wrap_login_shell(inner: &str) -> String {
+    format!("bash -lc {}", crate::ssh::shell_quote(inner))
 }
 
 fn ancillary_suffix(kind: &str) -> String {
