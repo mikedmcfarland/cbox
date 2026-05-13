@@ -115,11 +115,15 @@ impl Backend for LocalDockerBackend {
 
     async fn pause(&self, tier: &str) -> Result<()> {
         let name = container_name(tier);
-        self.docker
-            .pause_container(&name)
-            .await
-            .with_context(|| format!("pause {name}"))?;
-        Ok(())
+        match self.docker.pause_container(&name).await {
+            Ok(()) => Ok(()),
+            // 409 = already paused. Treat as success so callers (e.g.
+            // auto-pause on session destroy) don't have to pre-check.
+            Err(DockerError::DockerResponseServerError {
+                status_code: 409, ..
+            }) => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("pause {name}")),
+        }
     }
 
     async fn stop(&self, tier: &str) -> Result<()> {
