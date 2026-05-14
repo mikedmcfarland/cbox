@@ -12,18 +12,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 
 use crate::backend::Backend;
-use crate::backend::TierRunConfig;
 use crate::backend::local_docker::LocalDockerBackend;
-use crate::build::tier_image_tag;
-use crate::config::{Config, TierConfig};
-use crate::keys::{AUTHORIZED_KEYS_ENV, KeyPair, ensure_keypair};
-use crate::session::{LaunchCommand, dtach_command, shell_in_workspace_command, socket_exists};
+use crate::commands::common::{build_run_config, resolve_tier};
+use crate::config::Config;
+use crate::keys::ensure_keypair;
+use crate::session::{LaunchCommand, dtach_command, is_alive, shell_in_workspace_command};
 use crate::ssh::{SshConn, shell_quote};
 use crate::tmux;
-use crate::workspace::{
-    ProjectSource, container_session_path, prepare_session_workspace, resolve_project,
-    tier_workspace_mount,
-};
+use crate::workspace::{container_session_path, prepare_session_workspace, resolve_project};
 
 pub async fn run(
     name: String,
@@ -44,7 +40,14 @@ pub async fn run(
         attach_flag,
     )
     .await?;
-    apply_action(&prep.ssh, &name, &prep.workspace_container, prep.action).await
+    apply_action(
+        &prep.ssh,
+        &name,
+        &prep.workspace_container,
+        &prep.agent_command,
+        prep.action,
+    )
+    .await
 }
 
 /// Bundle of state computed by [`prepare`] — everything the final
@@ -53,6 +56,10 @@ struct Prep {
     ssh: SshConn,
     workspace_container: std::path::PathBuf,
     action: Action,
+    /// Agent command resolved from the tier's `agent.command` (defaults
+    /// to `"claude"`). Threaded through `apply_action` so every dtach /
+    /// fresh-shell launcher uses the same value.
+    agent_command: String,
     /// Tier the session landed in. Only read by the integration test
     /// today; future `cbox list`/`cbox status` work will surface it.
     #[allow(dead_code)]
@@ -72,8 +79,7 @@ async fn prepare(
     attach_flag: bool,
 ) -> Result<Prep> {
     let cfg_path = Config::default_path()?;
-    let cfg = Config::load(&cfg_path)
-        .with_context(|| format!("load config from {}", cfg_path.display()))?;
+    let cfg = Config::load_async(cfg_path).await?;
 
     // resolve_project / prepare_session_workspace do filesystem + git
     // subprocess work; ensure_keypair runs ssh-keygen. All must be
@@ -95,7 +101,14 @@ async fn prepare(
     let keypair = tokio::task::spawn_blocking(ensure_keypair)
         .await
         .context("join ensure_keypair task")??;
-    let run_cfg = build_run_config(&tier_name, &tier_cfg, &keypair)?;
+    let run_cfg = {
+        let tier_name = tier_name.clone();
+        let tier_cfg = tier_cfg.clone();
+        let keypair = keypair.clone();
+        tokio::task::spawn_blocking(move || build_run_config(&tier_name, &tier_cfg, &keypair))
+            .await
+            .context("join build_run_config task")??
+    };
 
     let backend = LocalDockerBackend::new()?;
     let endpoint = backend
@@ -121,13 +134,15 @@ async fn prepare(
         identity_file: keypair.private_key_path.clone(),
     };
 
-    let alive = socket_exists(&ssh, name).await?;
+    let alive = is_alive(&ssh, name).await?;
     let action = decide_action(alive, shell_flag, claude_flag, attach_flag);
 
+    let agent_command = tier_cfg.agent.command.clone();
     Ok(Prep {
         ssh,
         workspace_container,
         action,
+        agent_command,
         tier_name,
     })
 }
@@ -151,10 +166,24 @@ fn decide_action(alive: bool, shell: bool, claude: bool, attach: bool) -> Action
     }
 }
 
-async fn apply_action(ssh: &SshConn, name: &str, workspace: &Path, action: Action) -> Result<()> {
+async fn apply_action(
+    ssh: &SshConn,
+    name: &str,
+    workspace: &Path,
+    agent_command: &str,
+    action: Action,
+) -> Result<()> {
     match action {
-        Action::StartClaude => spawn_primary(ssh, name, workspace, LaunchCommand::Claude).await,
-        Action::StartShell => spawn_primary(ssh, name, workspace, LaunchCommand::Shell).await,
+        Action::StartClaude => {
+            spawn_primary(
+                ssh,
+                name,
+                workspace,
+                &LaunchCommand::Agent(agent_command.to_string()),
+            )
+            .await
+        }
+        Action::StartShell => spawn_primary(ssh, name, workspace, &LaunchCommand::Shell).await,
         Action::SelectExisting => {
             let primary = tmux::window_name(name, None);
             if tmux::inside_tmux() && tmux::select_window(&primary).await? {
@@ -162,7 +191,13 @@ async fn apply_action(ssh: &SshConn, name: &str, workspace: &Path, action: Actio
             } else {
                 // Outside tmux, or window was killed but socket persists —
                 // reattach inline via ssh.
-                attach_inline(ssh, name, workspace, LaunchCommand::Claude).await
+                attach_inline(
+                    ssh,
+                    name,
+                    workspace,
+                    &LaunchCommand::Agent(agent_command.to_string()),
+                )
+                .await
             }
         }
         Action::OpenAncillaryShell => {
@@ -170,13 +205,14 @@ async fn apply_action(ssh: &SshConn, name: &str, workspace: &Path, action: Actio
             spawn_ancillary(ssh, name, &inner, "shell").await
         }
         Action::OpenAncillaryClaude => {
-            // Ancillary Claude is a fresh process — closing the window
+            // Ancillary agent is a fresh process — closing the window
             // ends it, leaving the primary session untouched.
             let inner = format!(
-                "cd {ws} && exec claude",
+                "cd {ws} && exec {agent}",
                 ws = shell_quote(&workspace.display().to_string()),
+                agent = agent_command,
             );
-            spawn_ancillary(ssh, name, &inner, "claude").await
+            spawn_ancillary(ssh, name, &inner, "agent").await
         }
     }
 }
@@ -185,7 +221,7 @@ async fn spawn_primary(
     ssh: &SshConn,
     name: &str,
     workspace: &Path,
-    launch: LaunchCommand,
+    launch: &LaunchCommand,
 ) -> Result<()> {
     let inner = dtach_command(workspace, name, launch);
     let remote = wrap_login_shell(&inner);
@@ -219,7 +255,7 @@ async fn attach_inline(
     ssh: &SshConn,
     name: &str,
     workspace: &Path,
-    launch: LaunchCommand,
+    launch: &LaunchCommand,
 ) -> Result<()> {
     let inner = dtach_command(workspace, name, launch);
     let remote = wrap_login_shell(&inner);
@@ -250,40 +286,6 @@ fn ancillary_suffix(kind: &str) -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("{kind}-{secs}")
-}
-
-fn resolve_tier(
-    cfg: &Config,
-    project: &ProjectSource,
-    cli_override: Option<&str>,
-) -> Result<String> {
-    if let Some(t) = cli_override {
-        if !cfg.tiers.contains_key(t) {
-            bail!("tier {t:?} is not defined in cbox.yaml");
-        }
-        return Ok(t.to_string());
-    }
-    if let ProjectSource::Configured { tier: Some(t), .. } = project
-        && cfg.tiers.contains_key(t)
-    {
-        return Ok(t.clone());
-    }
-    if let Some(t) = &cfg.default_tier {
-        return Ok(t.clone());
-    }
-    bail!("no tier specified: pass --tier or set default_tier in cbox.yaml")
-}
-
-fn build_run_config(tier: &str, tier_cfg: &TierConfig, keypair: &KeyPair) -> Result<TierRunConfig> {
-    let workspace_mount = tier_workspace_mount(tier)?;
-    Ok(TierRunConfig {
-        image: tier_image_tag(tier),
-        env: vec![(AUTHORIZED_KEYS_ENV.to_string(), keypair.public_key.clone())],
-        network_mode: tier_cfg.network,
-        // DinD + bubblewrap at full strength require --privileged.
-        privileged: true,
-        mounts: vec![workspace_mount],
-    })
 }
 
 #[cfg(test)]
@@ -318,76 +320,6 @@ mod tests {
             decide_action(true, false, true, true),
             Action::SelectExisting
         );
-    }
-
-    fn synthetic_config(default_tier: Option<&str>) -> Config {
-        let yaml = format!(
-            r#"
-environment: /tmp/env
-{default_tier}
-layers:
-  c: /tmp/c
-tiers:
-  dev:
-    layers: [c]
-  power:
-    layers: [c]
-projects:
-  app:
-    repo: /tmp/app
-    tier: power
-"#,
-            default_tier = default_tier
-                .map(|t| format!("default_tier: {t}\n"))
-                .unwrap_or_default(),
-        );
-        serde_yaml_bw::from_str(&yaml).expect("yaml")
-    }
-
-    #[test]
-    fn resolve_tier_prefers_cli_override() {
-        let cfg = synthetic_config(Some("dev"));
-        let proj = ProjectSource::Configured {
-            name: "app".into(),
-            repo: "/tmp/app".into(),
-            tier: Some("power".into()),
-        };
-        let t = resolve_tier(&cfg, &proj, Some("dev")).unwrap();
-        assert_eq!(t, "dev");
-    }
-
-    #[test]
-    fn resolve_tier_falls_back_to_project_tier() {
-        let cfg = synthetic_config(Some("dev"));
-        let proj = ProjectSource::Configured {
-            name: "app".into(),
-            repo: "/tmp/app".into(),
-            tier: Some("power".into()),
-        };
-        let t = resolve_tier(&cfg, &proj, None).unwrap();
-        assert_eq!(t, "power");
-    }
-
-    #[test]
-    fn resolve_tier_falls_back_to_default_for_path_projects() {
-        let cfg = synthetic_config(Some("dev"));
-        let proj = ProjectSource::Path("/tmp/something".into());
-        let t = resolve_tier(&cfg, &proj, None).unwrap();
-        assert_eq!(t, "dev");
-    }
-
-    #[test]
-    fn resolve_tier_errors_without_default_or_override() {
-        let cfg = synthetic_config(None);
-        let proj = ProjectSource::Path("/tmp/something".into());
-        assert!(resolve_tier(&cfg, &proj, None).is_err());
-    }
-
-    #[test]
-    fn resolve_tier_rejects_unknown_override() {
-        let cfg = synthetic_config(Some("dev"));
-        let proj = ProjectSource::Path("/tmp/x".into());
-        assert!(resolve_tier(&cfg, &proj, Some("nope")).is_err());
     }
 
     /// End-to-end orchestration test against a real `cbox-tier-dev:latest`
@@ -520,7 +452,7 @@ projects:
 
             let mut found = false;
             for _ in 0..30 {
-                if socket_exists(&prep1.ssh, session).await? {
+                if is_alive(&prep1.ssh, session).await? {
                     found = true;
                     break;
                 }

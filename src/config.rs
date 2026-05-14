@@ -92,6 +92,49 @@ pub struct TierConfig {
     pub settings: Option<ExpandedPath>,
 
     pub backend: Option<String>,
+
+    /// Which agent command to launch in sessions. Defaults to `claude` /
+    /// `claude -p <prompt>`. Per-tier so tests can substitute a mock and
+    /// non-Claude agents can be tried out without a cbox.yaml-global
+    /// commitment.
+    #[serde(default)]
+    pub agent: AgentConfig,
+}
+
+/// Agent command shape. Defaults match Claude Code; override per-tier
+/// to point at a different binary or to inject a mock for tests.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    /// Command run by the interactive session (`cbox <name>`). Resolved
+    /// against the container's `PATH` under `bash -l`, so anything on
+    /// the tier image's PATH works.
+    #[serde(default = "default_agent_command")]
+    pub command: String,
+
+    /// Arguments inserted between [`Self::command`] and the user's
+    /// prompt for `cbox run`. Default `["-p"]` produces
+    /// `claude -p '<prompt>'`; for an agent that takes the prompt after
+    /// a different flag, override here (e.g. `["--message"]` for aider).
+    #[serde(default = "default_autonomous_args")]
+    pub autonomous_args: Vec<String>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            command: default_agent_command(),
+            autonomous_args: default_autonomous_args(),
+        }
+    }
+}
+
+fn default_agent_command() -> String {
+    "claude".to_string()
+}
+
+fn default_autonomous_args() -> Vec<String> {
+    vec!["-p".to_string()]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -206,6 +249,17 @@ impl Config {
         cfg.resolve_relative_paths(base);
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Async wrapper around [`Config::load`] for use from tokio handlers
+    /// (current-thread runtime). `load` does synchronous filesystem I/O,
+    /// so call sites in async fns must offload it via `spawn_blocking`.
+    pub async fn load_async(path: PathBuf) -> Result<Self> {
+        let display = path.display().to_string();
+        tokio::task::spawn_blocking(move || Config::load(&path))
+            .await
+            .context("join Config::load task")?
+            .with_context(|| format!("load config from {display}"))
     }
 
     /// Resolve the config path. Precedence:
@@ -429,6 +483,60 @@ tiers:
             .unwrap_err()
             .to_string();
         assert!(err.contains("undefined credential"), "{err}");
+    }
+
+    #[test]
+    fn agent_defaults_when_block_omitted() {
+        let yaml = r#"
+environment: /tmp/env
+layers:
+  c: /tmp/c
+tiers:
+  dev:
+    layers: [c]
+"#;
+        let cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
+        let agent = &cfg.tiers["dev"].agent;
+        assert_eq!(agent.command, "claude");
+        assert_eq!(agent.autonomous_args, vec!["-p".to_string()]);
+    }
+
+    #[test]
+    fn agent_override_replaces_defaults() {
+        let yaml = r#"
+environment: /tmp/env
+layers:
+  c: /tmp/c
+tiers:
+  mock:
+    layers: [c]
+    agent:
+      command: bash
+      autonomous_args: ["-c", "echo $0"]
+"#;
+        let cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
+        let agent = &cfg.tiers["mock"].agent;
+        assert_eq!(agent.command, "bash");
+        assert_eq!(agent.autonomous_args, vec!["-c", "echo $0"]);
+    }
+
+    #[test]
+    fn agent_partial_override_keeps_other_default() {
+        let yaml = r#"
+environment: /tmp/env
+layers:
+  c: /tmp/c
+tiers:
+  t:
+    layers: [c]
+    agent:
+      command: aider
+"#;
+        let cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
+        let agent = &cfg.tiers["t"].agent;
+        assert_eq!(agent.command, "aider");
+        // autonomous_args wasn't overridden, so it keeps the claude-style default.
+        assert_eq!(agent.autonomous_args, vec!["-p".to_string()]);
     }
 
     #[test]

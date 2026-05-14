@@ -116,6 +116,12 @@ Tiers combine three mechanisms:
 | Credentials | `credentials:` | Which tokens/mounts are available |
 | Claude settings | `settings:` | Tool permissions and domain allowlists, in Claude Code's `settings.json` format |
 
+Optional:
+
+| Mechanism | Field | Effect |
+|---|---|---|
+| Agent | `agent:` | Which command sessions launch. Defaults to Claude Code; see [Agent](#agent) below. Most installs leave this unset. |
+
 Example tier definitions:
 
 ```yaml
@@ -132,6 +138,30 @@ tiers:
     credentials: [anthropic-key, github-ro]
     settings: ~/.config/cbox/tiers/dev/settings.json
 ```
+
+### Agent
+
+What `cbox <name>` and `cbox run <name> "<prompt>"` actually launch
+inside the session. Defaults to Claude Code; the field exists so tests
+can substitute a deterministic mock and so a tier can be pointed at a
+different agent without a code change. Most users should leave this
+unset.
+
+```yaml
+tiers:
+  dev:
+    layers: [python, node]
+    # Optional — defaults to Claude Code:
+    agent:
+      command: claude          # interactive: `cbox <name>` runs this
+      autonomous_args: ["-p"]  # cbox run: <command> <args> <prompt>
+```
+
+The autonomous form is `<command> <autonomous_args...> <prompt>`. For
+an agent that takes the prompt after a flag (e.g. `aider --message
+"..."`), set `autonomous_args: ["--message"]`. Both fields default
+independently — overriding `command` alone keeps `-p` as the
+autonomous arg.
 
 ### Tier settings.json
 

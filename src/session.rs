@@ -5,8 +5,11 @@
 //! socket lives under `/run/cbox/<name>.sock` inside the tier; presence
 //! of the socket is the source of truth for whether the session is alive
 //! (per plan §Session tracking).
-
-// Consumed by the attach command in a later commit.
+//!
+//! Callers outside this module address sessions by **name**, never by
+//! socket path. That seam keeps the dtach choice swappable — a future
+//! tmux-based multiplexer would provide the same `is_alive` /
+//! `list_active` / `destroy` API without leaking its addressing scheme.
 
 use std::path::Path;
 
@@ -20,18 +23,23 @@ pub fn socket_path(name: &str) -> String {
     format!("/run/cbox/{name}.sock")
 }
 
-/// What the dtach session should launch on first attach.
-#[derive(Debug, Clone, Copy)]
+/// What the dtach session should launch on first attach. The `Agent`
+/// variant carries the per-tier configured agent command (defaults to
+/// `claude` from [`crate::config::AgentConfig`]); the `Shell` variant is
+/// always a login bash.
+#[derive(Debug, Clone)]
 pub enum LaunchCommand {
-    Claude,
+    Agent(String),
     Shell,
 }
 
 impl LaunchCommand {
-    fn render(self) -> &'static str {
+    fn render(&self) -> &str {
         match self {
-            // `claude` is on PATH in the cbox-base image's layers.
-            LaunchCommand::Claude => "claude",
+            // Agent command is taken verbatim from cbox.yaml's
+            // `tiers.<name>.agent.command` and resolved against the
+            // container's PATH by the surrounding `bash -lc`.
+            LaunchCommand::Agent(cmd) => cmd.as_str(),
             // `-l` so PATH and rc files are sourced (cbox is the login user).
             LaunchCommand::Shell => "bash -l",
         }
@@ -41,7 +49,7 @@ impl LaunchCommand {
 /// Build the inner shell command for dtach: cd into the workspace, then
 /// `dtach -A <socket> -z <cmd>`. `-z` suppresses the escape character so
 /// host tmux keybindings pass through unchanged.
-pub fn dtach_command(workspace: &Path, name: &str, launch: LaunchCommand) -> String {
+pub fn dtach_command(workspace: &Path, name: &str, launch: &LaunchCommand) -> String {
     format!(
         "cd {ws} && exec dtach -A {sock} -z {cmd}",
         ws = shell_quote(&workspace.display().to_string()),
@@ -59,9 +67,9 @@ pub fn shell_in_workspace_command(workspace: &Path) -> String {
     )
 }
 
-/// Test whether `/run/cbox/<name>.sock` exists on the tier. SSH exit code
-/// 0 means the socket is present.
-pub async fn socket_exists(ssh: &SshConn, name: &str) -> Result<bool> {
+/// Test whether the named session is alive on the tier. Dtach impl: the
+/// `/run/cbox/<name>.sock` socket exists.
+pub async fn is_alive(ssh: &SshConn, name: &str) -> Result<bool> {
     let socket = socket_path(name);
     let status = Command::new("ssh")
         .args(ssh.args())
@@ -73,6 +81,42 @@ pub async fn socket_exists(ssh: &SshConn, name: &str) -> Result<bool> {
         .await
         .context("invoke ssh test -S")?;
     Ok(status.success())
+}
+
+/// List session names alive on the tier (dtach impl: every `*.sock` under
+/// `/run/cbox/`, stripped of the `.sock` suffix). Empty when the directory
+/// is missing or has no sockets.
+pub async fn list_active(ssh: &SshConn) -> Result<Vec<String>> {
+    // Passed as one ssh arg so the remote shell parses the glob; multi-arg
+    // ssh joins with spaces and the remote `bash -c` would treat only the
+    // first word as the script.
+    //
+    // `printf '%s\n'` over the glob: `ls *.sock` mishandles a literal
+    // `*.sock` when the directory is empty (depending on `nullglob`).
+    // The `compgen` trick is bash-specific but the cbox image ships bash.
+    let script = "shopt -s nullglob; \
+                  for f in /run/cbox/*.sock; do \
+                      n=${f##*/}; printf '%s\\n' \"${n%.sock}\"; \
+                  done";
+    let output = Command::new("ssh")
+        .args(ssh.args())
+        .arg("--")
+        .arg(script)
+        .output()
+        .await
+        .context("invoke ssh to list /run/cbox sockets")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "list sessions: ssh exited with {} (stderr: {})",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
 }
 
 /// Remove the dtach socket on the tier. The dtach process exits naturally
@@ -125,7 +169,7 @@ mod tests {
         let cmd = dtach_command(
             &PathBuf::from("/workspace/has space"),
             "session",
-            LaunchCommand::Claude,
+            &LaunchCommand::Agent("claude".into()),
         );
         assert!(cmd.contains("cd '/workspace/has space'"), "{cmd}");
         assert!(
@@ -136,10 +180,24 @@ mod tests {
 
     #[test]
     fn dtach_command_chooses_launch_target() {
-        let claude = dtach_command(&PathBuf::from("/workspace/x"), "s", LaunchCommand::Claude);
-        assert!(claude.ends_with("-z claude"), "{claude}");
-        let shell = dtach_command(&PathBuf::from("/workspace/x"), "s", LaunchCommand::Shell);
+        let agent = dtach_command(
+            &PathBuf::from("/workspace/x"),
+            "s",
+            &LaunchCommand::Agent("claude".into()),
+        );
+        assert!(agent.ends_with("-z claude"), "{agent}");
+        let shell = dtach_command(&PathBuf::from("/workspace/x"), "s", &LaunchCommand::Shell);
         assert!(shell.ends_with("-z bash -l"), "{shell}");
+    }
+
+    #[test]
+    fn dtach_command_uses_configured_agent_command() {
+        let cmd = dtach_command(
+            &PathBuf::from("/workspace/x"),
+            "s",
+            &LaunchCommand::Agent("aider --watch".into()),
+        );
+        assert!(cmd.ends_with("-z aider --watch"), "{cmd}");
     }
 
     #[test]
@@ -149,7 +207,7 @@ mod tests {
     }
 
     /// End-to-end: bring up a tier container with the cbox keypair injected,
-    /// create a dtach socket via SSH, observe it via `socket_exists`, then
+    /// create a dtach socket via SSH, observe it via `is_alive`, then
     /// destroy and confirm the socket is gone.
     ///
     /// Reuses `cbox-tier-dev:latest` (the Phase 1 smoke-test image) — build
@@ -257,8 +315,12 @@ mod tests {
             }
 
             assert!(
-                !socket_exists(&ssh, session_name).await?,
+                !is_alive(&ssh, session_name).await?,
                 "fresh tier should have no session socket"
+            );
+            assert!(
+                list_active(&ssh).await?.is_empty(),
+                "fresh tier should have no sessions"
             );
 
             // Non-interactive dtach: forks, returns immediately, leaves the
@@ -279,7 +341,7 @@ mod tests {
             // Socket should appear nearly instantly.
             let mut found = false;
             for _ in 0..30 {
-                if socket_exists(&ssh, session_name).await? {
+                if is_alive(&ssh, session_name).await? {
                     found = true;
                     break;
                 }
@@ -287,10 +349,20 @@ mod tests {
             }
             anyhow::ensure!(found, "dtach socket never appeared");
 
+            let active = list_active(&ssh).await?;
+            anyhow::ensure!(
+                active == vec![session_name.to_string()],
+                "list_active should surface the live session, got {active:?}"
+            );
+
             destroy(&ssh, session_name).await?;
             anyhow::ensure!(
-                !socket_exists(&ssh, session_name).await?,
+                !is_alive(&ssh, session_name).await?,
                 "socket persisted after destroy"
+            );
+            anyhow::ensure!(
+                list_active(&ssh).await?.is_empty(),
+                "list_active should be empty after destroy"
             );
             Ok(())
         }
