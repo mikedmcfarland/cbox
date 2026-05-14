@@ -61,6 +61,43 @@ impl SshConn {
     }
 }
 
+/// Poll until sshd answers a trivial `true` over the connection, or
+/// give up after `timeout`. Needed by command paths that run a *single*
+/// ssh and bail on failure (`cbox run`'s `dtach -n` spawn): if the
+/// tier was just freshly started, sshd inside the container takes a
+/// few seconds to come up. The interactive `cbox <name>` path doesn't
+/// need this — its `ssh -t` blocks until sshd answers anyway.
+pub async fn wait_for_sshd(ssh: &SshConn, timeout: std::time::Duration) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut delay = std::time::Duration::from_millis(200);
+    loop {
+        let ok = tokio::process::Command::new("ssh")
+            .args(ssh.args())
+            .arg("-o")
+            .arg("ConnectTimeout=1")
+            .arg("--")
+            .arg("true")
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "sshd on {}:{} did not become reachable within {:?}",
+                ssh.endpoint.host,
+                ssh.endpoint.port,
+                timeout
+            );
+        }
+        tokio::time::sleep(delay).await;
+        // Mild backoff so a slow image doesn't get hammered.
+        delay = (delay * 2).min(std::time::Duration::from_secs(1));
+    }
+}
+
 /// Single-quote a token for POSIX shells. Safe for paths, tokens with
 /// spaces, and anything except a literal NUL.
 pub fn shell_quote(s: &str) -> String {

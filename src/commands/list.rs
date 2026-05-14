@@ -5,6 +5,8 @@
 //! `/run/cbox/*.sock`. Paused tiers can't be queried without first
 //! resuming them; we report them as `paused` with no session detail.
 
+use std::io::{self, Write};
+
 use anyhow::{Context, Result};
 
 use crate::backend::Backend;
@@ -16,6 +18,13 @@ use crate::session::list_active;
 use crate::ssh::SshConn;
 
 pub async fn run() -> Result<()> {
+    let mut stdout = io::stdout();
+    run_with(&mut stdout).await
+}
+
+/// Inner entrypoint: writes table output to `out` instead of stdout.
+/// Used by integration tests to capture and assert on output.
+pub(crate) async fn run_with(out: &mut impl Write) -> Result<()> {
     let cfg_path = Config::default_path()?;
     let cfg = Config::load(&cfg_path)
         .with_context(|| format!("load config from {}", cfg_path.display()))?;
@@ -63,17 +72,17 @@ pub async fn run() -> Result<()> {
         });
     }
 
-    print_table(&rows);
+    print_table(out, &rows)?;
     Ok(())
 }
 
-struct Row {
-    tier: String,
-    state: TierState,
-    sessions: Vec<String>,
+pub(crate) struct Row {
+    pub(crate) tier: String,
+    pub(crate) state: TierState,
+    pub(crate) sessions: Vec<String>,
 }
 
-fn print_table(rows: &[Row]) {
+fn print_table(out: &mut impl Write, rows: &[Row]) -> io::Result<()> {
     let tier_w = rows
         .iter()
         .map(|r| r.tier.len())
@@ -87,7 +96,7 @@ fn print_table(rows: &[Row]) {
         .unwrap_or(0)
         .max("STATE".len());
 
-    println!("{:<tier_w$}  {:<state_w$}  SESSIONS", "TIER", "STATE");
+    writeln!(out, "{:<tier_w$}  {:<state_w$}  SESSIONS", "TIER", "STATE")?;
     for row in rows {
         let sessions = if matches!(row.state, TierState::Running) {
             if row.sessions.is_empty() {
@@ -98,13 +107,15 @@ fn print_table(rows: &[Row]) {
         } else {
             "-".to_string()
         };
-        println!(
+        writeln!(
+            out,
             "{:<tier_w$}  {:<state_w$}  {}",
             row.tier,
             state_label(row.state),
             sessions,
-        );
+        )?;
     }
+    Ok(())
 }
 
 fn state_label(state: TierState) -> &'static str {
@@ -126,5 +137,53 @@ mod tests {
         assert_eq!(state_label(TierState::Running), "running");
         assert_eq!(state_label(TierState::Paused), "paused");
         assert_eq!(state_label(TierState::Stopped), "stopped");
+    }
+
+    #[test]
+    fn print_table_aligns_and_lists_sessions() {
+        let rows = vec![
+            Row {
+                tier: "dev".into(),
+                state: TierState::Running,
+                sessions: vec!["auth-fix".into(), "refactor".into()],
+            },
+            Row {
+                tier: "auto".into(),
+                state: TierState::Paused,
+                sessions: vec![],
+            },
+            Row {
+                tier: "power".into(),
+                state: TierState::NotCreated,
+                sessions: vec![],
+            },
+        ];
+        let mut buf = Vec::new();
+        print_table(&mut buf, &rows).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+
+        // Header present.
+        assert!(s.contains("TIER"), "{s}");
+        assert!(s.contains("STATE"), "{s}");
+        assert!(s.contains("SESSIONS"), "{s}");
+        // Running tier shows its sessions, joined.
+        assert!(s.contains("dev    running"), "{s}");
+        assert!(s.contains("auth-fix, refactor"), "{s}");
+        // Non-running tiers show `-`, not session list.
+        assert!(s.contains("auto   paused       -"), "{s}");
+        assert!(s.contains("power  not created  -"), "{s}");
+    }
+
+    #[test]
+    fn print_table_empty_sessions_running_tier_shows_none() {
+        let rows = vec![Row {
+            tier: "dev".into(),
+            state: TierState::Running,
+            sessions: vec![],
+        }];
+        let mut buf = Vec::new();
+        print_table(&mut buf, &rows).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("(none)"), "{s}");
     }
 }
