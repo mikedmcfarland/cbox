@@ -26,8 +26,7 @@ pub async fn run(name: String, cmd: Vec<String>) -> Result<()> {
         bail!("no command given to `cbox exec`");
     }
     let cfg_path = Config::default_path()?;
-    let cfg = Config::load(&cfg_path)
-        .with_context(|| format!("load config from {}", cfg_path.display()))?;
+    let cfg = Config::load_async(cfg_path).await?;
 
     let keypair = tokio::task::spawn_blocking(ensure_keypair)
         .await
@@ -35,7 +34,11 @@ pub async fn run(name: String, cmd: Vec<String>) -> Result<()> {
     let backend = LocalDockerBackend::new()?;
 
     let mut found_tier_paused = false;
-    let mut ssh_for_session: Option<SshConn> = None;
+    // Collect every running tier that owns this session name. `cbox run`
+    // refuses duplicates across tiers, but a stale or
+    // out-of-band-started session could still produce more than one
+    // match; surface that explicitly instead of silently picking one.
+    let mut matches: Vec<(String, SshConn)> = Vec::new();
     for tier_name in cfg.tiers.keys() {
         let state = backend
             .tier_state(tier_name)
@@ -58,14 +61,13 @@ pub async fn run(name: String, cmd: Vec<String>) -> Result<()> {
             identity_file: keypair.private_key_path.clone(),
         };
         if is_alive(&ssh, &name).await? {
-            ssh_for_session = Some(ssh);
-            break;
+            matches.push((tier_name.clone(), ssh));
         }
     }
 
-    let ssh = match ssh_for_session {
-        Some(s) => s,
-        None => {
+    let ssh = match matches.len() {
+        1 => matches.pop().unwrap().1,
+        0 => {
             if found_tier_paused {
                 bail!(
                     "no live session {name:?} in any running tier \
@@ -74,6 +76,15 @@ pub async fn run(name: String, cmd: Vec<String>) -> Result<()> {
                 );
             }
             bail!("no live session {name:?}");
+        }
+        _ => {
+            let tiers: Vec<&str> = matches.iter().map(|(t, _)| t.as_str()).collect();
+            bail!(
+                "session {name:?} is live in multiple tiers ({}); \
+                 destroy the duplicates (`cbox destroy {name}`) and \
+                 leave only one",
+                tiers.join(", ")
+            );
         }
     };
 

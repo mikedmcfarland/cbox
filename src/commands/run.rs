@@ -15,10 +15,11 @@
 use anyhow::{Context, Result, bail};
 
 use crate::backend::Backend;
+use crate::backend::TierState;
 use crate::backend::local_docker::LocalDockerBackend;
 use crate::commands::common::{build_run_config, resolve_tier};
 use crate::config::Config;
-use crate::keys::ensure_keypair;
+use crate::keys::{KeyPair, ensure_keypair};
 use crate::session::{is_alive, socket_path};
 use crate::ssh::{SshConn, shell_quote, wait_for_sshd};
 use crate::workspace::{container_session_path, prepare_session_workspace, resolve_project};
@@ -34,8 +35,7 @@ pub async fn run(
     }
 
     let cfg_path = Config::default_path()?;
-    let cfg = Config::load(&cfg_path)
-        .with_context(|| format!("load config from {}", cfg_path.display()))?;
+    let cfg = Config::load_async(cfg_path).await?;
 
     let project_source = {
         let cfg = cfg.clone();
@@ -54,25 +54,28 @@ pub async fn run(
     let keypair = tokio::task::spawn_blocking(ensure_keypair)
         .await
         .context("join ensure_keypair task")??;
-    let run_cfg = build_run_config(&tier_name, &tier_cfg, &keypair)?;
+    let run_cfg = {
+        let tier_name = tier_name.clone();
+        let tier_cfg = tier_cfg.clone();
+        let keypair = keypair.clone();
+        tokio::task::spawn_blocking(move || build_run_config(&tier_name, &tier_cfg, &keypair))
+            .await
+            .context("join build_run_config task")??
+    };
 
     let backend = LocalDockerBackend::new()?;
+
+    // Reject duplicate live session names *across all* currently-running
+    // tiers before we touch this tier or its workspace. `cbox exec <name>`
+    // resolves sessions globally, so a duplicate in another tier would
+    // make later commands ambiguous. Probing other tiers here avoids
+    // spinning the target tier up just to fail.
+    ensure_session_not_alive_elsewhere(&backend, &cfg, &keypair, &tier_name, &name).await?;
+
     let endpoint = backend
         .ensure_running(&tier_name, &run_cfg)
         .await
         .with_context(|| format!("start tier {tier_name:?}"))?;
-
-    {
-        let tier_name = tier_name.clone();
-        let session = name.clone();
-        let project_source = project_source.clone();
-        tokio::task::spawn_blocking(move || {
-            prepare_session_workspace(&tier_name, &session, &project_source, None)
-        })
-        .await
-        .context("join prepare_session_workspace task")??;
-    }
-    let workspace = container_session_path(&name)?;
 
     let ssh = SshConn {
         endpoint,
@@ -86,12 +89,27 @@ pub async fn run(
         .await
         .with_context(|| format!("wait for sshd in tier {tier_name:?}"))?;
 
+    // Check the target tier last, *before* preparing the workspace, so a
+    // duplicate `cbox run` never rewrites/syncs the workspace of an
+    // already-active session.
     if is_alive(&ssh, &name).await? {
         bail!(
             "session {name:?} is already live in tier {tier_name:?}; \
              destroy it first (`cbox destroy {name}`) before re-running"
         );
     }
+
+    {
+        let tier_name = tier_name.clone();
+        let session = name.clone();
+        let project_source = project_source.clone();
+        tokio::task::spawn_blocking(move || {
+            prepare_session_workspace(&tier_name, &session, &project_source, None)
+        })
+        .await
+        .context("join prepare_session_workspace task")??;
+    }
+    let workspace = container_session_path(&name)?;
 
     // `dtach -n <sock> <agent> <agent_args...> <prompt>` — detached spawn,
     // returns immediately. The agent's output collects in the pty buffer
@@ -130,6 +148,53 @@ pub async fn run(
         "==> autonomous session {name:?} started in tier {tier_name:?}; \
          attach with `cbox {name}`"
     );
+    Ok(())
+}
+
+/// Refuse to start a session whose name already lives in some *other*
+/// running tier. The target tier is excluded — the caller checks it
+/// separately after `ensure_running` brings it up. Paused tiers can't
+/// be probed without resuming them, so they're skipped; the worst case
+/// is a duplicate name in a paused tier surfacing only when the user
+/// resumes it (acceptable: `cbox exec` already surfaces the paused-tier
+/// hint when no live session is found).
+async fn ensure_session_not_alive_elsewhere(
+    backend: &LocalDockerBackend,
+    cfg: &Config,
+    keypair: &KeyPair,
+    target_tier: &str,
+    session: &str,
+) -> Result<()> {
+    for tier in cfg.tiers.keys() {
+        if tier == target_tier {
+            continue;
+        }
+        let state = backend
+            .tier_state(tier)
+            .await
+            .with_context(|| format!("inspect tier {tier:?}"))?;
+        if state != TierState::Running {
+            continue;
+        }
+        let Some(endpoint) = backend
+            .endpoint(tier)
+            .await
+            .with_context(|| format!("endpoint for tier {tier:?}"))?
+        else {
+            continue;
+        };
+        let ssh = SshConn {
+            endpoint,
+            identity_file: keypair.private_key_path.clone(),
+        };
+        if is_alive(&ssh, session).await? {
+            bail!(
+                "session {session:?} is already live in tier {tier:?}; \
+                 destroy it there (`cbox destroy {session}`) before \
+                 starting a new one in {target_tier:?}"
+            );
+        }
+    }
     Ok(())
 }
 
