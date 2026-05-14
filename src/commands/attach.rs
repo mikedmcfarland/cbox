@@ -17,7 +17,7 @@ use crate::backend::local_docker::LocalDockerBackend;
 use crate::build::tier_image_tag;
 use crate::config::{Config, TierConfig};
 use crate::keys::{AUTHORIZED_KEYS_ENV, KeyPair, ensure_keypair};
-use crate::session::{LaunchCommand, dtach_command, shell_in_workspace_command, socket_exists};
+use crate::session::{LaunchCommand, dtach_command, is_alive, shell_in_workspace_command};
 use crate::ssh::{SshConn, shell_quote};
 use crate::tmux;
 use crate::workspace::{
@@ -121,7 +121,7 @@ async fn prepare(
         identity_file: keypair.private_key_path.clone(),
     };
 
-    let alive = socket_exists(&ssh, name).await?;
+    let alive = is_alive(&ssh, name).await?;
     let action = decide_action(alive, shell_flag, claude_flag, attach_flag);
 
     Ok(Prep {
@@ -520,7 +520,7 @@ projects:
 
             let mut found = false;
             for _ in 0..30 {
-                if socket_exists(&prep1.ssh, session).await? {
+                if is_alive(&prep1.ssh, session).await? {
                     found = true;
                     break;
                 }

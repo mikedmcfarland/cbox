@@ -5,8 +5,11 @@
 //! socket lives under `/run/cbox/<name>.sock` inside the tier; presence
 //! of the socket is the source of truth for whether the session is alive
 //! (per plan §Session tracking).
-
-// Consumed by the attach command in a later commit.
+//!
+//! Callers outside this module address sessions by **name**, never by
+//! socket path. That seam keeps the dtach choice swappable — a future
+//! tmux-based multiplexer would provide the same `is_alive` /
+//! `list_active` / `destroy` API without leaking its addressing scheme.
 
 use std::path::Path;
 
@@ -59,9 +62,9 @@ pub fn shell_in_workspace_command(workspace: &Path) -> String {
     )
 }
 
-/// Test whether `/run/cbox/<name>.sock` exists on the tier. SSH exit code
-/// 0 means the socket is present.
-pub async fn socket_exists(ssh: &SshConn, name: &str) -> Result<bool> {
+/// Test whether the named session is alive on the tier. Dtach impl: the
+/// `/run/cbox/<name>.sock` socket exists.
+pub async fn is_alive(ssh: &SshConn, name: &str) -> Result<bool> {
     let socket = socket_path(name);
     let status = Command::new("ssh")
         .args(ssh.args())
@@ -73,6 +76,42 @@ pub async fn socket_exists(ssh: &SshConn, name: &str) -> Result<bool> {
         .await
         .context("invoke ssh test -S")?;
     Ok(status.success())
+}
+
+/// List session names alive on the tier (dtach impl: every `*.sock` under
+/// `/run/cbox/`, stripped of the `.sock` suffix). Empty when the directory
+/// is missing or has no sockets.
+pub async fn list_active(ssh: &SshConn) -> Result<Vec<String>> {
+    // Passed as one ssh arg so the remote shell parses the glob; multi-arg
+    // ssh joins with spaces and the remote `bash -c` would treat only the
+    // first word as the script.
+    //
+    // `printf '%s\n'` over the glob: `ls *.sock` mishandles a literal
+    // `*.sock` when the directory is empty (depending on `nullglob`).
+    // The `compgen` trick is bash-specific but the cbox image ships bash.
+    let script = "shopt -s nullglob; \
+                  for f in /run/cbox/*.sock; do \
+                      n=${f##*/}; printf '%s\\n' \"${n%.sock}\"; \
+                  done";
+    let output = Command::new("ssh")
+        .args(ssh.args())
+        .arg("--")
+        .arg(script)
+        .output()
+        .await
+        .context("invoke ssh to list /run/cbox sockets")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "list sessions: ssh exited with {} (stderr: {})",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
 }
 
 /// Remove the dtach socket on the tier. The dtach process exits naturally
@@ -149,7 +188,7 @@ mod tests {
     }
 
     /// End-to-end: bring up a tier container with the cbox keypair injected,
-    /// create a dtach socket via SSH, observe it via `socket_exists`, then
+    /// create a dtach socket via SSH, observe it via `is_alive`, then
     /// destroy and confirm the socket is gone.
     ///
     /// Reuses `cbox-tier-dev:latest` (the Phase 1 smoke-test image) — build
@@ -257,8 +296,12 @@ mod tests {
             }
 
             assert!(
-                !socket_exists(&ssh, session_name).await?,
+                !is_alive(&ssh, session_name).await?,
                 "fresh tier should have no session socket"
+            );
+            assert!(
+                list_active(&ssh).await?.is_empty(),
+                "fresh tier should have no sessions"
             );
 
             // Non-interactive dtach: forks, returns immediately, leaves the
@@ -279,7 +322,7 @@ mod tests {
             // Socket should appear nearly instantly.
             let mut found = false;
             for _ in 0..30 {
-                if socket_exists(&ssh, session_name).await? {
+                if is_alive(&ssh, session_name).await? {
                     found = true;
                     break;
                 }
@@ -287,10 +330,20 @@ mod tests {
             }
             anyhow::ensure!(found, "dtach socket never appeared");
 
+            let active = list_active(&ssh).await?;
+            anyhow::ensure!(
+                active == vec![session_name.to_string()],
+                "list_active should surface the live session, got {active:?}"
+            );
+
             destroy(&ssh, session_name).await?;
             anyhow::ensure!(
-                !socket_exists(&ssh, session_name).await?,
+                !is_alive(&ssh, session_name).await?,
                 "socket persisted after destroy"
+            );
+            anyhow::ensure!(
+                list_active(&ssh).await?.is_empty(),
+                "list_active should be empty after destroy"
             );
             Ok(())
         }

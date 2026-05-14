@@ -12,7 +12,7 @@ use crate::backend::TierState;
 use crate::backend::local_docker::LocalDockerBackend;
 use crate::config::Config;
 use crate::keys::ensure_keypair;
-use crate::session::{destroy as destroy_session, socket_exists};
+use crate::session::{destroy as destroy_session, is_alive, list_active};
 use crate::ssh::SshConn;
 use crate::tmux;
 use crate::workspace::{session_dir, tier_workspace_dir};
@@ -42,7 +42,7 @@ pub async fn run(name: String, workspace: bool) -> Result<()> {
             endpoint,
             identity_file: keypair.private_key_path.clone(),
         };
-        if !socket_exists(&ssh, &name).await? {
+        if !is_alive(&ssh, &name).await? {
             continue;
         }
 
@@ -51,7 +51,7 @@ pub async fn run(name: String, workspace: bool) -> Result<()> {
             .with_context(|| format!("destroy session {name:?} in tier {tier_name:?}"))?;
         killed_in = Some(tier_name.clone());
 
-        if !any_sockets_left(&ssh).await? {
+        if list_active(&ssh).await?.is_empty() {
             backend
                 .pause(tier_name)
                 .await
@@ -72,19 +72,6 @@ pub async fn run(name: String, workspace: bool) -> Result<()> {
         eprintln!("==> no live session {name:?} found; cleaned up local state");
     }
     Ok(())
-}
-
-async fn any_sockets_left(ssh: &SshConn) -> Result<bool> {
-    // Pass the script as one ssh arg so the remote shell preserves the
-    // glob + pipe; multiple args get joined with spaces and break this.
-    let output = tokio::process::Command::new("ssh")
-        .args(ssh.args())
-        .arg("--")
-        .arg("ls /run/cbox/*.sock 2>/dev/null | head -1")
-        .output()
-        .await
-        .context("invoke ssh to enumerate /run/cbox")?;
-    Ok(!output.stdout.is_empty())
 }
 
 async fn remove_workspace_for(cfg: &Config, name: &str) -> Result<()> {
