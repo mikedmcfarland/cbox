@@ -7,8 +7,8 @@
 //! The implicit `local` backend (Docker) is the only implementation today;
 //! see [`local_docker`].
 
-// Phase 1 foundation: the trait + value types are the API surface for
-// Phase 2+ session/lifecycle code. Drop this when consumers land.
+// `stop`, `list_tiers`, and MountSource::Volume are consumed by
+// `cbox tier stop`, `cbox list`, and named-volume credentials in Phase 3+.
 #![allow(dead_code)]
 
 pub mod local_docker;

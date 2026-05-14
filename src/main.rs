@@ -6,6 +6,11 @@ mod build;
 mod cli;
 mod commands;
 mod config;
+mod keys;
+mod session;
+mod ssh;
+mod tmux;
+mod workspace;
 
 use cli::{Cli, Command};
 

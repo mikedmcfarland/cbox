@@ -23,7 +23,7 @@ use bollard::Docker;
 use bollard::errors::Error as DockerError;
 use bollard::models::{
     ContainerCreateBody, ContainerStateStatusEnum, ContainerSummaryStateEnum, HostConfig,
-    NetworkingConfig,
+    NetworkingConfig, PortBinding,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
@@ -42,6 +42,11 @@ pub const TIER_LABEL: &str = "cbox.tier";
 
 /// Backend identifier reported in [`TierInfo`].
 pub const BACKEND_NAME: &str = "local";
+
+/// Container port we expose for SSH. The base image's sshd listens on :22;
+/// we publish that to a dynamic host port and look it up via
+/// [`Backend::endpoint`].
+pub const SSH_CONTAINER_PORT: &str = "22/tcp";
 
 /// Compose the container name cbox uses for a tier instance.
 pub fn container_name(tier: &str) -> String {
@@ -102,15 +107,16 @@ impl Backend for LocalDockerBackend {
             }
         }
 
-        // Phase 2 will wire the SSH endpoint here. For now report a
-        // stub — callers that actually need to connect will hit this
-        // and fail loudly, which is the desired behaviour during Phase 1.
-        Ok(TierEndpoint {
-            host: "localhost".to_string(),
-            port: 0,
-            user: "cbox".to_string(),
-            ssh_options: Vec::new(),
-        })
+        // After `docker start`, NetworkSettings.Ports can briefly be empty
+        // while the daemon publishes the port. Poll for a few seconds
+        // before giving up.
+        for _ in 0..50 {
+            if let Some(ep) = self.endpoint(tier).await? {
+                return Ok(ep);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        anyhow::bail!("{name} started but ssh port never published")
     }
 
     async fn pause(&self, tier: &str) -> Result<()> {
@@ -210,10 +216,47 @@ impl Backend for LocalDockerBackend {
         Ok(out)
     }
 
-    async fn endpoint(&self, _tier: &str) -> Result<Option<TierEndpoint>> {
-        // Phase 2 wires SSH endpoint discovery from the running container's
-        // exposed ports. For Phase 1 this is intentionally absent.
-        Ok(None)
+    async fn endpoint(&self, tier: &str) -> Result<Option<TierEndpoint>> {
+        let name = container_name(tier);
+        let resp = match self
+            .docker
+            .inspect_container(
+                &name,
+                None::<bollard::query_parameters::InspectContainerOptions>,
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("inspect {name}")),
+        };
+
+        // Only running containers have an active port mapping. Paused
+        // containers keep the same mapping, but `host_port` is still set
+        // because Docker reserves it for the container's lifetime.
+        let Some(port) = resp
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.ports.as_ref())
+            .and_then(|p| p.get(SSH_CONTAINER_PORT).cloned())
+            .flatten()
+            .and_then(|bindings| {
+                bindings
+                    .into_iter()
+                    .find_map(|b| b.host_port.and_then(|s| s.parse::<u16>().ok()))
+            })
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(TierEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+            user: "cbox".to_string(),
+            ssh_options: Vec::new(),
+        }))
     }
 }
 
@@ -227,16 +270,29 @@ async fn create_container(docker: &Docker, tier: &str, config: &TierRunConfig) -
     labels.insert(MANAGED_BY_LABEL.to_string(), MANAGED_BY_VALUE.to_string());
     labels.insert(TIER_LABEL.to_string(), tier.to_string());
 
+    let mut port_bindings = HashMap::new();
+    port_bindings.insert(
+        SSH_CONTAINER_PORT.to_string(),
+        Some(vec![PortBinding {
+            // Bind to loopback only — the trust boundary is the host.
+            host_ip: Some("127.0.0.1".to_string()),
+            // Empty host_port asks the daemon to pick a free port.
+            host_port: Some(String::new()),
+        }]),
+    );
+
     let host_config = HostConfig {
         privileged: Some(config.privileged),
         network_mode: Some(network_mode_str(config.network_mode).to_string()),
         binds: Some(binds_for(&config.mounts)),
+        port_bindings: Some(port_bindings),
         ..Default::default()
     };
 
     let body = ContainerCreateBody {
         image: Some(config.image.clone()),
         env: Some(env),
+        exposed_ports: Some(vec![SSH_CONTAINER_PORT.to_string()]),
         labels: Some(labels),
         host_config: Some(host_config),
         networking_config: Some(NetworkingConfig::default()),
@@ -403,9 +459,6 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn dind_smoke_via_backend() {
-        use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-        use futures_util::StreamExt;
-
         let backend = LocalDockerBackend::new().expect("connect to docker");
 
         // Pre-flight: the tier image must exist. We don't build it here
@@ -436,10 +489,16 @@ mod tests {
             mounts: Vec::new(),
         };
 
-        backend
+        let endpoint = backend
             .ensure_running(tier, &cfg)
             .await
             .expect("start tier");
+
+        // SSH endpoint discovery: port was bound dynamically and reported
+        // back. We only assert non-zero — the actual port is daemon-chosen.
+        assert_eq!(endpoint.host, "127.0.0.1");
+        assert_ne!(endpoint.port, 0, "ssh port should be discovered");
+        assert_eq!(endpoint.user, "cbox");
 
         // Wait for dockerd to come up inside the container. supervisord
         // starts it asynchronously; poll up to ~60s. We require exec
@@ -472,40 +531,133 @@ mod tests {
             "expected non-empty docker server version"
         );
         teardown.expect("destroy tier");
+    }
 
-        // Helper avoids ambient `use bollard::*` polluting the module.
-        // Returns (exit_code, captured_output).
-        async fn exec_capture(
-            docker: &bollard::Docker,
-            container: &str,
-            cmd: Vec<&str>,
-        ) -> Result<(i64, String)> {
-            let exec = docker
-                .create_exec(
-                    container,
-                    CreateExecOptions {
-                        attach_stdout: Some(true),
-                        attach_stderr: Some(true),
-                        cmd: Some(cmd),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            let opts = StartExecOptions {
-                detach: false,
-                ..Default::default()
-            };
-            let mut buf = String::new();
-            if let StartExecResults::Attached { mut output, .. } =
-                docker.start_exec(&exec.id, Some(opts)).await?
-            {
-                while let Some(chunk) = output.next().await {
-                    let chunk = chunk?;
-                    buf.push_str(&chunk.to_string());
-                }
-            }
-            let info = docker.inspect_exec(&exec.id).await?;
-            Ok((info.exit_code.unwrap_or(-1), buf))
+    /// Guard against regressions of `passwd -d cbox` in `base/Dockerfile`.
+    /// Ubuntu 24.04 ships new users with `cbox:!:…` in `/etc/shadow`, which
+    /// OpenSSH 9.6 with `UsePAM no` treats as fully locked — rejecting
+    /// pubkey auth before even reading `authorized_keys`. The deleted-
+    /// password state shows up as an empty second field.
+    #[tokio::test]
+    #[ignore]
+    async fn cbox_account_is_not_password_locked() {
+        let backend = LocalDockerBackend::new().expect("connect to docker");
+        if backend
+            .docker()
+            .inspect_image(DIND_TEST_IMAGE)
+            .await
+            .is_err()
+        {
+            panic!(
+                "missing image {DIND_TEST_IMAGE}. Build it first: \
+                 CBOX_CONFIG=examples/full-setup/cbox.yaml \
+                 cargo run -- build dev"
+            );
         }
+
+        let tier = "passwd-guard-test";
+        let _ = backend.destroy(tier).await;
+
+        let cfg = TierRunConfig {
+            image: DIND_TEST_IMAGE.to_string(),
+            env: Vec::new(),
+            network_mode: NetworkMode::Bridge,
+            privileged: true,
+            mounts: Vec::new(),
+        };
+        backend
+            .ensure_running(tier, &cfg)
+            .await
+            .expect("start tier");
+
+        // `/etc/shadow` is root-readable only, so the exec runs as root
+        // explicitly. May briefly fail while the entrypoint is still
+        // populating the file; poll for a successful exec.
+        let mut line = None;
+        for _ in 0..30 {
+            match exec_capture_as(
+                backend.docker(),
+                &container_name(tier),
+                Some("root"),
+                vec!["sh", "-c", "grep '^cbox:' /etc/shadow"],
+            )
+            .await
+            {
+                Ok((0, out)) if !out.trim().is_empty() => {
+                    line = Some(out);
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+            }
+        }
+
+        let teardown = backend.destroy(tier).await;
+
+        let line = line.expect("getent shadow cbox returned nothing");
+        // shadow(5) format: name:passwd:lastchange:min:max:warn:inactive:expire:reserved
+        let pw_field = line
+            .trim()
+            .split(':')
+            .nth(1)
+            .expect("shadow line missing passwd field");
+        assert!(
+            !pw_field.starts_with('!') && !pw_field.starts_with('*'),
+            "cbox account is locked ({line:?}); did `passwd -d cbox` get removed from base/Dockerfile?"
+        );
+        assert!(
+            pw_field.is_empty(),
+            "expected empty passwd field after `passwd -d cbox`, got {pw_field:?} ({line:?})"
+        );
+        teardown.expect("destroy tier");
+    }
+
+    /// Helper for execing a command in a running container and capturing
+    /// stdout+stderr. Returns (exit_code, captured_output).
+    async fn exec_capture(
+        docker: &bollard::Docker,
+        container: &str,
+        cmd: Vec<&str>,
+    ) -> Result<(i64, String)> {
+        exec_capture_as(docker, container, None, cmd).await
+    }
+
+    /// Same as [`exec_capture`] but optionally runs the command as a
+    /// specific user inside the container.
+    async fn exec_capture_as(
+        docker: &bollard::Docker,
+        container: &str,
+        user: Option<&str>,
+        cmd: Vec<&str>,
+    ) -> Result<(i64, String)> {
+        use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+        use futures_util::StreamExt;
+
+        let exec = docker
+            .create_exec(
+                container,
+                CreateExecOptions {
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    cmd: Some(cmd),
+                    user,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let opts = StartExecOptions {
+            detach: false,
+            ..Default::default()
+        };
+        let mut buf = String::new();
+        if let StartExecResults::Attached { mut output, .. } =
+            docker.start_exec(&exec.id, Some(opts)).await?
+        {
+            while let Some(chunk) = output.next().await {
+                let chunk = chunk?;
+                buf.push_str(&chunk.to_string());
+            }
+        }
+        let info = docker.inspect_exec(&exec.id).await?;
+        Ok((info.exit_code.unwrap_or(-1), buf))
     }
 }
