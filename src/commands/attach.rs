@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 
 use crate::backend::Backend;
-use crate::backend::local_docker::LocalDockerBackend;
 use crate::backend::TierRunConfig;
+use crate::backend::local_docker::LocalDockerBackend;
 use crate::build::tier_image_tag;
 use crate::config::{Config, TierConfig};
 use crate::keys::{AUTHORIZED_KEYS_ENV, KeyPair, ensure_keypair};
@@ -184,7 +184,11 @@ async fn spawn_ancillary(ssh: &SshConn, name: &str, inner: &str, kind: &str) -> 
     let remote = wrap_login_shell(inner);
     if tmux::inside_tmux() {
         let line = ssh.quoted_command_line(&["-t", "--", &remote]);
-        tmux::create_window(&tmux::window_name(name, Some(&ancillary_suffix(kind))), &line).await
+        tmux::create_window(
+            &tmux::window_name(name, Some(&ancillary_suffix(kind))),
+            &line,
+        )
+        .await
     } else {
         run_inline(ssh, &["-t", "--", &remote]).await
     }
@@ -268,16 +272,31 @@ mod tests {
     #[test]
     fn decide_action_truth_table() {
         // Fresh session
-        assert_eq!(decide_action(false, false, false, false), Action::StartClaude);
+        assert_eq!(
+            decide_action(false, false, false, false),
+            Action::StartClaude
+        );
         assert_eq!(decide_action(false, true, false, false), Action::StartShell);
 
         // Existing session
-        assert_eq!(decide_action(true, false, false, false), Action::OpenAncillaryShell);
-        assert_eq!(decide_action(true, false, true, false), Action::OpenAncillaryClaude);
-        assert_eq!(decide_action(true, false, false, true), Action::SelectExisting);
+        assert_eq!(
+            decide_action(true, false, false, false),
+            Action::OpenAncillaryShell
+        );
+        assert_eq!(
+            decide_action(true, false, true, false),
+            Action::OpenAncillaryClaude
+        );
+        assert_eq!(
+            decide_action(true, false, false, true),
+            Action::SelectExisting
+        );
         // --attach wins over --claude when the session exists (clap also
         // rejects this combination, but the resolver is defensive).
-        assert_eq!(decide_action(true, false, true, true), Action::SelectExisting);
+        assert_eq!(
+            decide_action(true, false, true, true),
+            Action::SelectExisting
+        );
     }
 
     fn synthetic_config(default_tier: Option<&str>) -> Config {
@@ -440,23 +459,11 @@ projects:
         let _ = backend.destroy(tier).await;
 
         let outcome: Result<()> = async {
-            let project_arg = src
-                .path()
-                .to_str()
-                .expect("src path is utf8")
-                .to_string();
+            let project_arg = src.path().to_str().expect("src path is utf8").to_string();
 
             // First pass: fresh session → StartClaude.
-            let prep1 = prepare(
-                session,
-                Some(&project_arg),
-                None,
-                None,
-                false,
-                false,
-                false,
-            )
-            .await?;
+            let prep1 =
+                prepare(session, Some(&project_arg), None, None, false, false, false).await?;
             anyhow::ensure!(
                 prep1.action == Action::StartClaude,
                 "fresh session should pick StartClaude, got {:?}",
@@ -499,16 +506,8 @@ projects:
             anyhow::ensure!(found, "dtach socket never appeared");
 
             // Second pass: socket exists → OpenAncillaryShell.
-            let prep2 = prepare(
-                session,
-                Some(&project_arg),
-                None,
-                None,
-                false,
-                false,
-                false,
-            )
-            .await?;
+            let prep2 =
+                prepare(session, Some(&project_arg), None, None, false, false, false).await?;
             anyhow::ensure!(
                 prep2.action == Action::OpenAncillaryShell,
                 "re-entry should pick OpenAncillaryShell, got {:?}",

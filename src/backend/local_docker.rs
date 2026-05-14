@@ -565,7 +565,10 @@ mod tests {
             privileged: true,
             mounts: Vec::new(),
         };
-        backend.ensure_running(tier, &cfg).await.expect("start tier");
+        backend
+            .ensure_running(tier, &cfg)
+            .await
+            .expect("start tier");
 
         // `/etc/shadow` is root-readable only, so the exec runs as root
         // explicitly. May briefly fail while the entrypoint is still

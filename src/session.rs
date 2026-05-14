@@ -128,22 +128,17 @@ mod tests {
             LaunchCommand::Claude,
         );
         assert!(cmd.contains("cd '/workspace/has space'"), "{cmd}");
-        assert!(cmd.contains("exec dtach -A /run/cbox/session.sock -z claude"), "{cmd}");
+        assert!(
+            cmd.contains("exec dtach -A /run/cbox/session.sock -z claude"),
+            "{cmd}"
+        );
     }
 
     #[test]
     fn dtach_command_chooses_launch_target() {
-        let claude = dtach_command(
-            &PathBuf::from("/workspace/x"),
-            "s",
-            LaunchCommand::Claude,
-        );
+        let claude = dtach_command(&PathBuf::from("/workspace/x"), "s", LaunchCommand::Claude);
         assert!(claude.ends_with("-z claude"), "{claude}");
-        let shell = dtach_command(
-            &PathBuf::from("/workspace/x"),
-            "s",
-            LaunchCommand::Shell,
-        );
+        let shell = dtach_command(&PathBuf::from("/workspace/x"), "s", LaunchCommand::Shell);
         assert!(shell.ends_with("-z bash -l"), "{shell}");
     }
 
@@ -251,7 +246,10 @@ mod tests {
         // Run the rest in a closure so cleanup happens even on assertion failure.
         let outcome: Result<()> = async {
             if !sshd_ready {
-                anyhow::bail!("sshd never became reachable on {}", ssh.args().last().unwrap());
+                anyhow::bail!(
+                    "sshd never became reachable on {}",
+                    ssh.args().last().unwrap()
+                );
             }
 
             assert!(

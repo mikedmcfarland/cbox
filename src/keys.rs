@@ -114,7 +114,11 @@ mod tests {
 
         let kp = result.expect("first call");
         let again = again.expect("second call");
-        assert!(kp.public_key.starts_with("ssh-ed25519 "), "{}", kp.public_key);
+        assert!(
+            kp.public_key.starts_with("ssh-ed25519 "),
+            "{}",
+            kp.public_key
+        );
         assert_eq!(kp.public_key, again.public_key);
         assert!(kp.private_key_path.exists());
     }

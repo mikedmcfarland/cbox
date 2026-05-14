@@ -46,9 +46,8 @@ pub enum ProjectSource {
 /// Phase 2 does not yet support implicit project resolution from the
 /// current working directory; the caller must pass something.
 pub fn resolve_project(cfg: &Config, arg: Option<&str>) -> Result<ProjectSource> {
-    let arg = arg.ok_or_else(|| {
-        anyhow::anyhow!("no project specified (provide a project name or path)")
-    })?;
+    let arg = arg
+        .ok_or_else(|| anyhow::anyhow!("no project specified (provide a project name or path)"))?;
 
     if looks_like_path(arg) {
         let expanded = PathBuf::from(shellexpand::tilde(arg).into_owned());
@@ -154,7 +153,10 @@ fn git_clone(repo: &str, dir: &Path) -> Result<()> {
         .status()
         .with_context(|| format!("invoke git clone {repo}"))?;
     if !status.success() {
-        bail!("git clone {repo} into {} exited with {status}", dir.display());
+        bail!(
+            "git clone {repo} into {} exited with {status}",
+            dir.display()
+        );
     }
     Ok(())
 }
@@ -208,9 +210,8 @@ projects:
 
     #[test]
     fn resolves_configured_project_by_name() {
-        let cfg = synthetic_config(
-            "  my-app:\n    repo: git@github.com:org/my-app.git\n    tier: dev\n",
-        );
+        let cfg =
+            synthetic_config("  my-app:\n    repo: git@github.com:org/my-app.git\n    tier: dev\n");
         let resolved = resolve_project(&cfg, Some("my-app")).unwrap();
         match resolved {
             ProjectSource::Configured { name, repo, tier } => {
@@ -329,8 +330,8 @@ projects:
         assert_eq!(head_branch(&dir), "main");
 
         // Idempotency: re-running with the same session is a no-op.
-        let dir2 = prepare_session_workspace(tier, "no-branch", &project, None)
-            .expect("re-run no-branch");
+        let dir2 =
+            prepare_session_workspace(tier, "no-branch", &project, None).expect("re-run no-branch");
         assert_eq!(dir, dir2);
 
         // Case 2: existing branch → `checkout` succeeds first try.
@@ -362,6 +363,9 @@ projects:
             .output()
             .expect("git rev-parse");
         assert!(out.status.success(), "rev-parse failed: {:?}", out);
-        String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+        String::from_utf8(out.stdout)
+            .expect("utf8")
+            .trim()
+            .to_string()
     }
 }

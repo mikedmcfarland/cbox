@@ -128,13 +128,22 @@ mod tests {
     #[test]
     fn window_belongs_matches_primary_and_ancillary() {
         assert!(window_belongs_to_session("cbox:auth-fix", "auth-fix"));
-        assert!(window_belongs_to_session("cbox:auth-fix:shell-1", "auth-fix"));
-        assert!(window_belongs_to_session("cbox:auth-fix:claude-2", "auth-fix"));
+        assert!(window_belongs_to_session(
+            "cbox:auth-fix:shell-1",
+            "auth-fix"
+        ));
+        assert!(window_belongs_to_session(
+            "cbox:auth-fix:claude-2",
+            "auth-fix"
+        ));
     }
 
     #[test]
     fn window_belongs_rejects_unrelated_names() {
-        assert!(!window_belongs_to_session("cbox:auth-fix-extra", "auth-fix"));
+        assert!(!window_belongs_to_session(
+            "cbox:auth-fix-extra",
+            "auth-fix"
+        ));
         assert!(!window_belongs_to_session("auth-fix", "auth-fix"));
         assert!(!window_belongs_to_session("zsh", "auth-fix"));
         assert!(!window_belongs_to_session("cbox:other", "auth-fix"));

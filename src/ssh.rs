@@ -75,7 +75,8 @@ pub fn shell_quote(s: &str) -> String {
 }
 
 fn is_shell_safe(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-' | '_')
+    c.is_ascii_alphanumeric()
+        || matches!(c, '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-' | '_')
 }
 
 #[cfg(test)]
@@ -108,7 +109,8 @@ mod tests {
     #[test]
     fn args_pass_through_endpoint_ssh_options() {
         let mut ep = fake_endpoint();
-        ep.ssh_options.push(("ProxyCommand".into(), "foo bar".into()));
+        ep.ssh_options
+            .push(("ProxyCommand".into(), "foo bar".into()));
         let conn = SshConn {
             endpoint: ep,
             identity_file: PathBuf::from("/k"),
