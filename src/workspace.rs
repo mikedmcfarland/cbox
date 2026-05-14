@@ -79,8 +79,23 @@ fn looks_like_path(s: &str) -> bool {
 
 /// `~/.cbox/workspaces/<tier>/` on the host (not created here).
 pub fn tier_workspace_dir(tier: &str) -> Result<PathBuf> {
+    validate_component("tier", tier)?;
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
     Ok(PathBuf::from(home).join(".cbox/workspaces").join(tier))
+}
+
+/// Reject anything that isn't a single normal path segment: tier names
+/// come from config and session names from CLI args, and both get joined
+/// into host paths. Without this guard, `cbox foo/../../../etc` would
+/// canonicalise to an arbitrary location and `cbox destroy --workspace`
+/// would happily `remove_dir_all` it.
+fn validate_component(kind: &str, value: &str) -> Result<()> {
+    use std::path::Component;
+    let mut components = Path::new(value).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => Ok(()),
+        _ => bail!("{kind} must be a single path component: {value:?}"),
+    }
 }
 
 pub fn ensure_tier_workspace_dir(tier: &str) -> Result<PathBuf> {
@@ -100,12 +115,14 @@ pub fn tier_workspace_mount(tier: &str) -> Result<Mount> {
 }
 
 pub fn session_dir(tier: &str, session: &str) -> Result<PathBuf> {
+    validate_component("session", session)?;
     Ok(tier_workspace_dir(tier)?.join(session))
 }
 
 /// Path the session's workspace appears at inside the container.
-pub fn container_session_path(session: &str) -> PathBuf {
-    PathBuf::from(WORKSPACE_TARGET).join(session)
+pub fn container_session_path(session: &str) -> Result<PathBuf> {
+    validate_component("session", session)?;
+    Ok(PathBuf::from(WORKSPACE_TARGET).join(session))
 }
 
 /// Populate `<tier>/<session>/` by cloning `project`. Idempotent — if
@@ -122,7 +139,17 @@ pub fn prepare_session_workspace(
 ) -> Result<PathBuf> {
     let dir = session_dir(tier, session)?;
     if dir.join(".git").exists() {
-        return Ok(dir);
+        // A killed or partial `git clone` can leave `.git` behind without
+        // a valid worktree; reusing it would silently hand the user a
+        // broken workspace forever. `rev-parse` is the cheapest probe
+        // that fails on corrupt repos.
+        if is_valid_git_checkout(&dir) {
+            return Ok(dir);
+        }
+        bail!(
+            "workspace {} contains an invalid git checkout; remove it with `cbox destroy --workspace`",
+            dir.display()
+        );
     }
     if dir.exists() {
         bail!(
@@ -143,6 +170,16 @@ pub fn prepare_session_workspace(
         git_checkout(&dir, b)?;
     }
     Ok(dir)
+}
+
+fn is_valid_git_checkout(dir: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn git_clone(repo: &str, dir: &Path) -> Result<()> {
@@ -269,9 +306,19 @@ projects:
     #[test]
     fn container_session_path_is_under_workspace() {
         assert_eq!(
-            container_session_path("auth-fix"),
+            container_session_path("auth-fix").unwrap(),
             PathBuf::from("/workspace/auth-fix")
         );
+    }
+
+    #[test]
+    fn path_components_in_tier_or_session_are_rejected() {
+        assert!(tier_workspace_dir("../escape").is_err());
+        assert!(tier_workspace_dir("a/b").is_err());
+        assert!(tier_workspace_dir("/abs").is_err());
+        assert!(session_dir("dev", "..").is_err());
+        assert!(session_dir("dev", "foo/bar").is_err());
+        assert!(container_session_path("../etc").is_err());
     }
 
     /// Prepare workspaces against a real local git repo and assert each of

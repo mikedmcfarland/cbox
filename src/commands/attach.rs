@@ -93,7 +93,7 @@ async fn prepare(
         .with_context(|| format!("start tier {tier_name:?}"))?;
 
     prepare_session_workspace(&tier_name, name, &project_source, branch)?;
-    let workspace_container = container_session_path(name);
+    let workspace_container = container_session_path(name)?;
 
     let ssh = SshConn {
         endpoint,
