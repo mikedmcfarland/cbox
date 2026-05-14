@@ -12,18 +12,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 
 use crate::backend::Backend;
-use crate::backend::TierRunConfig;
 use crate::backend::local_docker::LocalDockerBackend;
-use crate::build::tier_image_tag;
-use crate::config::{Config, TierConfig};
-use crate::keys::{AUTHORIZED_KEYS_ENV, KeyPair, ensure_keypair};
+use crate::commands::common::{build_run_config, resolve_tier};
+use crate::config::Config;
+use crate::keys::ensure_keypair;
 use crate::session::{LaunchCommand, dtach_command, is_alive, shell_in_workspace_command};
 use crate::ssh::{SshConn, shell_quote};
 use crate::tmux;
-use crate::workspace::{
-    ProjectSource, container_session_path, prepare_session_workspace, resolve_project,
-    tier_workspace_mount,
-};
+use crate::workspace::{container_session_path, prepare_session_workspace, resolve_project};
 
 pub async fn run(
     name: String,
@@ -252,40 +248,6 @@ fn ancillary_suffix(kind: &str) -> String {
     format!("{kind}-{secs}")
 }
 
-fn resolve_tier(
-    cfg: &Config,
-    project: &ProjectSource,
-    cli_override: Option<&str>,
-) -> Result<String> {
-    if let Some(t) = cli_override {
-        if !cfg.tiers.contains_key(t) {
-            bail!("tier {t:?} is not defined in cbox.yaml");
-        }
-        return Ok(t.to_string());
-    }
-    if let ProjectSource::Configured { tier: Some(t), .. } = project
-        && cfg.tiers.contains_key(t)
-    {
-        return Ok(t.clone());
-    }
-    if let Some(t) = &cfg.default_tier {
-        return Ok(t.clone());
-    }
-    bail!("no tier specified: pass --tier or set default_tier in cbox.yaml")
-}
-
-fn build_run_config(tier: &str, tier_cfg: &TierConfig, keypair: &KeyPair) -> Result<TierRunConfig> {
-    let workspace_mount = tier_workspace_mount(tier)?;
-    Ok(TierRunConfig {
-        image: tier_image_tag(tier),
-        env: vec![(AUTHORIZED_KEYS_ENV.to_string(), keypair.public_key.clone())],
-        network_mode: tier_cfg.network,
-        // DinD + bubblewrap at full strength require --privileged.
-        privileged: true,
-        mounts: vec![workspace_mount],
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,76 +280,6 @@ mod tests {
             decide_action(true, false, true, true),
             Action::SelectExisting
         );
-    }
-
-    fn synthetic_config(default_tier: Option<&str>) -> Config {
-        let yaml = format!(
-            r#"
-environment: /tmp/env
-{default_tier}
-layers:
-  c: /tmp/c
-tiers:
-  dev:
-    layers: [c]
-  power:
-    layers: [c]
-projects:
-  app:
-    repo: /tmp/app
-    tier: power
-"#,
-            default_tier = default_tier
-                .map(|t| format!("default_tier: {t}\n"))
-                .unwrap_or_default(),
-        );
-        serde_yaml_bw::from_str(&yaml).expect("yaml")
-    }
-
-    #[test]
-    fn resolve_tier_prefers_cli_override() {
-        let cfg = synthetic_config(Some("dev"));
-        let proj = ProjectSource::Configured {
-            name: "app".into(),
-            repo: "/tmp/app".into(),
-            tier: Some("power".into()),
-        };
-        let t = resolve_tier(&cfg, &proj, Some("dev")).unwrap();
-        assert_eq!(t, "dev");
-    }
-
-    #[test]
-    fn resolve_tier_falls_back_to_project_tier() {
-        let cfg = synthetic_config(Some("dev"));
-        let proj = ProjectSource::Configured {
-            name: "app".into(),
-            repo: "/tmp/app".into(),
-            tier: Some("power".into()),
-        };
-        let t = resolve_tier(&cfg, &proj, None).unwrap();
-        assert_eq!(t, "power");
-    }
-
-    #[test]
-    fn resolve_tier_falls_back_to_default_for_path_projects() {
-        let cfg = synthetic_config(Some("dev"));
-        let proj = ProjectSource::Path("/tmp/something".into());
-        let t = resolve_tier(&cfg, &proj, None).unwrap();
-        assert_eq!(t, "dev");
-    }
-
-    #[test]
-    fn resolve_tier_errors_without_default_or_override() {
-        let cfg = synthetic_config(None);
-        let proj = ProjectSource::Path("/tmp/something".into());
-        assert!(resolve_tier(&cfg, &proj, None).is_err());
-    }
-
-    #[test]
-    fn resolve_tier_rejects_unknown_override() {
-        let cfg = synthetic_config(Some("dev"));
-        let proj = ProjectSource::Path("/tmp/x".into());
-        assert!(resolve_tier(&cfg, &proj, Some("nope")).is_err());
     }
 
     /// End-to-end orchestration test against a real `cbox-tier-dev:latest`

@@ -2,6 +2,7 @@ pub mod attach;
 pub mod auth;
 pub mod build;
 pub mod cleanup;
+pub mod common;
 pub mod completions;
 pub mod destroy;
 pub mod exec;

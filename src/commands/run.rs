@@ -15,17 +15,13 @@
 use anyhow::{Context, Result, bail};
 
 use crate::backend::Backend;
-use crate::backend::TierRunConfig;
 use crate::backend::local_docker::LocalDockerBackend;
-use crate::build::tier_image_tag;
-use crate::config::{Config, TierConfig};
-use crate::keys::{AUTHORIZED_KEYS_ENV, KeyPair, ensure_keypair};
+use crate::commands::common::{build_run_config, resolve_tier};
+use crate::config::Config;
+use crate::keys::ensure_keypair;
 use crate::session::{is_alive, socket_path};
 use crate::ssh::{SshConn, shell_quote};
-use crate::workspace::{
-    ProjectSource, container_session_path, prepare_session_workspace, resolve_project,
-    tier_workspace_mount,
-};
+use crate::workspace::{container_session_path, prepare_session_workspace, resolve_project};
 
 pub async fn run(
     name: String,
@@ -121,37 +117,4 @@ pub async fn run(
          attach with `cbox {name}`"
     );
     Ok(())
-}
-
-fn resolve_tier(
-    cfg: &Config,
-    project: &ProjectSource,
-    cli_override: Option<&str>,
-) -> Result<String> {
-    if let Some(t) = cli_override {
-        if !cfg.tiers.contains_key(t) {
-            bail!("tier {t:?} is not defined in cbox.yaml");
-        }
-        return Ok(t.to_string());
-    }
-    if let ProjectSource::Configured { tier: Some(t), .. } = project
-        && cfg.tiers.contains_key(t)
-    {
-        return Ok(t.clone());
-    }
-    if let Some(t) = &cfg.default_tier {
-        return Ok(t.clone());
-    }
-    bail!("no tier specified: pass --tier or set default_tier in cbox.yaml")
-}
-
-fn build_run_config(tier: &str, tier_cfg: &TierConfig, keypair: &KeyPair) -> Result<TierRunConfig> {
-    let workspace_mount = tier_workspace_mount(tier)?;
-    Ok(TierRunConfig {
-        image: tier_image_tag(tier),
-        env: vec![(AUTHORIZED_KEYS_ENV.to_string(), keypair.public_key.clone())],
-        network_mode: tier_cfg.network,
-        privileged: true,
-        mounts: vec![workspace_mount],
-    })
 }
