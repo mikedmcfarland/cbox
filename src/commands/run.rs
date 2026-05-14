@@ -86,18 +86,25 @@ pub async fn run(
         );
     }
 
-    // `dtach -n <sock> claude -p <prompt>` — detached spawn, returns
-    // immediately. claude's output collects in the pty buffer until the
-    // user attaches via `cbox <name>`.
+    // `dtach -n <sock> <agent> <agent_args...> <prompt>` — detached spawn,
+    // returns immediately. The agent's output collects in the pty buffer
+    // until the user attaches via `cbox <name>`.
     //
     // Whole thing passed as one ssh arg so the remote shell parses our
     // quoting intact (sshd would otherwise space-join multi-arg into
     // `bash -c <first-word>`).
+    let mut agent_parts: Vec<String> = Vec::with_capacity(2 + tier_cfg.agent.autonomous_args.len());
+    agent_parts.push(shell_quote(&tier_cfg.agent.command));
+    for a in &tier_cfg.agent.autonomous_args {
+        agent_parts.push(shell_quote(a));
+    }
+    agent_parts.push(shell_quote(&prompt));
+    let agent_cmd = agent_parts.join(" ");
     let inner = format!(
-        "cd {ws} && exec dtach -n {sock} claude -p {prompt}",
+        "cd {ws} && exec dtach -n {sock} {agent}",
         ws = shell_quote(&workspace.display().to_string()),
         sock = shell_quote(&socket_path(&name)),
-        prompt = shell_quote(&prompt),
+        agent = agent_cmd,
     );
     let remote = format!("bash -lc {}", shell_quote(&inner));
 

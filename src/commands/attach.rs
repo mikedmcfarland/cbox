@@ -40,7 +40,14 @@ pub async fn run(
         attach_flag,
     )
     .await?;
-    apply_action(&prep.ssh, &name, &prep.workspace_container, prep.action).await
+    apply_action(
+        &prep.ssh,
+        &name,
+        &prep.workspace_container,
+        &prep.agent_command,
+        prep.action,
+    )
+    .await
 }
 
 /// Bundle of state computed by [`prepare`] — everything the final
@@ -49,6 +56,10 @@ struct Prep {
     ssh: SshConn,
     workspace_container: std::path::PathBuf,
     action: Action,
+    /// Agent command resolved from the tier's `agent.command` (defaults
+    /// to `"claude"`). Threaded through `apply_action` so every dtach /
+    /// fresh-shell launcher uses the same value.
+    agent_command: String,
     /// Tier the session landed in. Only read by the integration test
     /// today; future `cbox list`/`cbox status` work will surface it.
     #[allow(dead_code)]
@@ -120,10 +131,12 @@ async fn prepare(
     let alive = is_alive(&ssh, name).await?;
     let action = decide_action(alive, shell_flag, claude_flag, attach_flag);
 
+    let agent_command = tier_cfg.agent.command.clone();
     Ok(Prep {
         ssh,
         workspace_container,
         action,
+        agent_command,
         tier_name,
     })
 }
@@ -147,10 +160,24 @@ fn decide_action(alive: bool, shell: bool, claude: bool, attach: bool) -> Action
     }
 }
 
-async fn apply_action(ssh: &SshConn, name: &str, workspace: &Path, action: Action) -> Result<()> {
+async fn apply_action(
+    ssh: &SshConn,
+    name: &str,
+    workspace: &Path,
+    agent_command: &str,
+    action: Action,
+) -> Result<()> {
     match action {
-        Action::StartClaude => spawn_primary(ssh, name, workspace, LaunchCommand::Claude).await,
-        Action::StartShell => spawn_primary(ssh, name, workspace, LaunchCommand::Shell).await,
+        Action::StartClaude => {
+            spawn_primary(
+                ssh,
+                name,
+                workspace,
+                &LaunchCommand::Agent(agent_command.to_string()),
+            )
+            .await
+        }
+        Action::StartShell => spawn_primary(ssh, name, workspace, &LaunchCommand::Shell).await,
         Action::SelectExisting => {
             let primary = tmux::window_name(name, None);
             if tmux::inside_tmux() && tmux::select_window(&primary).await? {
@@ -158,7 +185,13 @@ async fn apply_action(ssh: &SshConn, name: &str, workspace: &Path, action: Actio
             } else {
                 // Outside tmux, or window was killed but socket persists —
                 // reattach inline via ssh.
-                attach_inline(ssh, name, workspace, LaunchCommand::Claude).await
+                attach_inline(
+                    ssh,
+                    name,
+                    workspace,
+                    &LaunchCommand::Agent(agent_command.to_string()),
+                )
+                .await
             }
         }
         Action::OpenAncillaryShell => {
@@ -166,13 +199,14 @@ async fn apply_action(ssh: &SshConn, name: &str, workspace: &Path, action: Actio
             spawn_ancillary(ssh, name, &inner, "shell").await
         }
         Action::OpenAncillaryClaude => {
-            // Ancillary Claude is a fresh process — closing the window
+            // Ancillary agent is a fresh process — closing the window
             // ends it, leaving the primary session untouched.
             let inner = format!(
-                "cd {ws} && exec claude",
+                "cd {ws} && exec {agent}",
                 ws = shell_quote(&workspace.display().to_string()),
+                agent = agent_command,
             );
-            spawn_ancillary(ssh, name, &inner, "claude").await
+            spawn_ancillary(ssh, name, &inner, "agent").await
         }
     }
 }
@@ -181,7 +215,7 @@ async fn spawn_primary(
     ssh: &SshConn,
     name: &str,
     workspace: &Path,
-    launch: LaunchCommand,
+    launch: &LaunchCommand,
 ) -> Result<()> {
     let inner = dtach_command(workspace, name, launch);
     let remote = wrap_login_shell(&inner);
@@ -215,7 +249,7 @@ async fn attach_inline(
     ssh: &SshConn,
     name: &str,
     workspace: &Path,
-    launch: LaunchCommand,
+    launch: &LaunchCommand,
 ) -> Result<()> {
     let inner = dtach_command(workspace, name, launch);
     let remote = wrap_login_shell(&inner);

@@ -23,18 +23,23 @@ pub fn socket_path(name: &str) -> String {
     format!("/run/cbox/{name}.sock")
 }
 
-/// What the dtach session should launch on first attach.
-#[derive(Debug, Clone, Copy)]
+/// What the dtach session should launch on first attach. The `Agent`
+/// variant carries the per-tier configured agent command (defaults to
+/// `claude` from [`crate::config::AgentConfig`]); the `Shell` variant is
+/// always a login bash.
+#[derive(Debug, Clone)]
 pub enum LaunchCommand {
-    Claude,
+    Agent(String),
     Shell,
 }
 
 impl LaunchCommand {
-    fn render(self) -> &'static str {
+    fn render(&self) -> &str {
         match self {
-            // `claude` is on PATH in the cbox-base image's layers.
-            LaunchCommand::Claude => "claude",
+            // Agent command is taken verbatim from cbox.yaml's
+            // `tiers.<name>.agent.command` and resolved against the
+            // container's PATH by the surrounding `bash -lc`.
+            LaunchCommand::Agent(cmd) => cmd.as_str(),
             // `-l` so PATH and rc files are sourced (cbox is the login user).
             LaunchCommand::Shell => "bash -l",
         }
@@ -44,7 +49,7 @@ impl LaunchCommand {
 /// Build the inner shell command for dtach: cd into the workspace, then
 /// `dtach -A <socket> -z <cmd>`. `-z` suppresses the escape character so
 /// host tmux keybindings pass through unchanged.
-pub fn dtach_command(workspace: &Path, name: &str, launch: LaunchCommand) -> String {
+pub fn dtach_command(workspace: &Path, name: &str, launch: &LaunchCommand) -> String {
     format!(
         "cd {ws} && exec dtach -A {sock} -z {cmd}",
         ws = shell_quote(&workspace.display().to_string()),
@@ -164,7 +169,7 @@ mod tests {
         let cmd = dtach_command(
             &PathBuf::from("/workspace/has space"),
             "session",
-            LaunchCommand::Claude,
+            &LaunchCommand::Agent("claude".into()),
         );
         assert!(cmd.contains("cd '/workspace/has space'"), "{cmd}");
         assert!(
@@ -175,10 +180,24 @@ mod tests {
 
     #[test]
     fn dtach_command_chooses_launch_target() {
-        let claude = dtach_command(&PathBuf::from("/workspace/x"), "s", LaunchCommand::Claude);
-        assert!(claude.ends_with("-z claude"), "{claude}");
-        let shell = dtach_command(&PathBuf::from("/workspace/x"), "s", LaunchCommand::Shell);
+        let agent = dtach_command(
+            &PathBuf::from("/workspace/x"),
+            "s",
+            &LaunchCommand::Agent("claude".into()),
+        );
+        assert!(agent.ends_with("-z claude"), "{agent}");
+        let shell = dtach_command(&PathBuf::from("/workspace/x"), "s", &LaunchCommand::Shell);
         assert!(shell.ends_with("-z bash -l"), "{shell}");
+    }
+
+    #[test]
+    fn dtach_command_uses_configured_agent_command() {
+        let cmd = dtach_command(
+            &PathBuf::from("/workspace/x"),
+            "s",
+            &LaunchCommand::Agent("aider --watch".into()),
+        );
+        assert!(cmd.ends_with("-z aider --watch"), "{cmd}");
     }
 
     #[test]
