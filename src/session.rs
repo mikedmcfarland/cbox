@@ -159,6 +159,7 @@ mod tests {
     /// real `~/.cbox/`.
     #[tokio::test]
     #[ignore]
+    #[serial_test::serial(home)]
     async fn session_lifecycle_via_ssh() {
         use std::time::Duration;
 
@@ -184,9 +185,9 @@ mod tests {
         // developer's real ~/.cbox/.
         let tmp_home = tempfile::tempdir().expect("tempdir");
         let prev_home = std::env::var_os("HOME");
-        // SAFETY: tests in this module run on a current_thread tokio
-        // runtime; no other thread observes HOME during this scope. The
-        // RAII guard below restores HOME on panic.
+        // SAFETY: every HOME-mutating test in this crate takes the
+        // `home` serial lock; no other thread observes HOME during this
+        // scope. The RAII guard below restores HOME on panic.
         unsafe { std::env::set_var("HOME", tmp_home.path()) };
         struct HomeGuard(Option<std::ffi::OsString>);
         impl Drop for HomeGuard {

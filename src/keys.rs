@@ -87,6 +87,7 @@ mod tests {
     /// back. Skipped when `ssh-keygen` isn't on PATH (rare, but keeps
     /// CI portable).
     #[test]
+    #[serial_test::serial(home)]
     fn ensure_keypair_generates_on_first_call() {
         // Probe ssh-keygen availability via a cheap `-V` invocation.
         if Command::new("ssh-keygen").arg("-?").output().is_err() {
@@ -97,8 +98,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         // Snapshot/restore HOME so other tests aren't affected.
         let prev_home = std::env::var_os("HOME");
-        // SAFETY: tests run single-threaded under `cargo test` by default;
-        // no other thread observes HOME during this scope.
+        // SAFETY: every HOME-mutating test in this crate takes the
+        // `home` serial lock, so no other thread observes HOME during
+        // this scope.
         unsafe {
             std::env::set_var("HOME", tmp.path());
         }

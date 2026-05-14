@@ -326,9 +326,11 @@ projects:
     /// no branch (inherits source HEAD), an existing branch (`checkout`
     /// succeeds via the clone's remote-tracking refs), and a new branch
     /// (`checkout` fails, fallback `checkout -b` succeeds). All three are
-    /// exercised in a single test because they share a HOME swap and
-    /// cargo runs tests in parallel — separate functions would race.
+    /// exercised in a single test because they share a HOME swap; the
+    /// `home` serial lock keeps this test from racing other crate-local
+    /// tests that also mutate HOME.
     #[test]
+    #[serial_test::serial(home)]
     fn prepare_session_workspace_covers_branch_shapes() {
         // Snapshot HOME so a panic doesn't leak the tempdir into the
         // developer's real `~/.cbox/`.
@@ -346,11 +348,9 @@ projects:
 
         let tmp_home = tempfile::tempdir().expect("home tempdir");
         let prev_home = std::env::var_os("HOME");
-        // SAFETY: this test is single-threaded with respect to HOME within
-        // its own scope; the RAII guard restores HOME on panic. Other
-        // tests in this binary that also swap HOME synchronise via being
-        // the only consumer in their crate-local scope (see
-        // `keys::tests::ensure_keypair_generates_on_first_call`).
+        // SAFETY: the `home` serial lock (above) serialises every
+        // crate-local test that mutates HOME, so no other thread
+        // observes HOME during this scope. RAII guard restores on panic.
         unsafe { std::env::set_var("HOME", tmp_home.path()) };
         let _home = HomeGuard(prev_home);
 

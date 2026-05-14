@@ -404,6 +404,7 @@ projects:
     /// image is missing.
     #[tokio::test]
     #[ignore]
+    #[serial_test::serial(home)]
     async fn attach_run_against_docker() {
         use std::time::Duration;
 
@@ -437,8 +438,9 @@ projects:
         }
         let tmp_home = tempfile::tempdir().expect("home tempdir");
         let prev_home = std::env::var_os("HOME");
-        // SAFETY: tokio current_thread runtime; no other thread observes
-        // HOME during this scope. RAII guard restores on panic.
+        // SAFETY: every HOME-mutating test in this crate takes the
+        // `home` serial lock; no other thread observes HOME during this
+        // scope. RAII guard restores on panic.
         unsafe { std::env::set_var("HOME", tmp_home.path()) };
         let _home = HomeGuard(prev_home);
 
