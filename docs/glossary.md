@@ -35,6 +35,7 @@ are cbox.yaml shorthand for `(repo, tier)`.
 | **tier endpoint** | SSH connectivity for a running tier instance: host, port, user, ssh_options. Code type: `TierEndpoint`. See ADR 011. |
 | **tier state** | Persistent contents of a tier volume that accumulate across sessions: Claude Code's `.claude.json` (preferences, MCP configs, OAuth MCP tokens), Docker daemon state and image cache, anything written to `/home/cbox/`. Survives instance pause/stop/resume. Lost only on tier destroy. See ADR 002, ADR 006, ADR 012. |
 | **tier settings** | Claude Code `settings.json` file mounted into the tier instance. Configures **Claude sandbox**, **permissions**, **allowed domains**. Referenced via the tier's `settings:` field in cbox.yaml. |
+| **agent** | The command a session launches inside the tier. Per-tier via `tiers.<name>.agent.{command, autonomous_args}` in cbox.yaml; defaults to Claude Code (`command: claude`, `autonomous_args: [-p]`). Exists so per-tier mocks are possible in tests and so non-Claude agents can be wired in without code changes. Intentionally low-key — Claude Code remains the default and the only blessed agent. |
 
 ### Tier instance lifecycle
 
@@ -56,7 +57,7 @@ predicate over a running instance, not a state.
 | Term | Definition |
 |---|---|
 | **session** | Logical unit of work, identified by `<name>`, scoped to one tier. Has exactly one socket and one workspace; has a window only if interactive. Stateless tracking (ADR 010): the socket *is* the session's existence. |
-| **session socket** | dtach (interactive) or tmux (autonomous) socket at `/run/cbox/<name>.sock` inside the tier instance. Presence determines aliveness. |
+| **session socket** | dtach socket at `/run/cbox/<name>.sock` inside the tier instance, used by both interactive (`dtach -A -z`) and autonomous (`dtach -n`) sessions. Presence determines aliveness. |
 | **session workspace** | Session's working directory at `/workspace/<name>/` inside the tier instance. cbox owns the checkout (clone for the first session in a repo, worktree for subsequent sessions in the same tier — see ADR 009). Persists by default after session destroy. Local backend: also accessible on the host at `~/.cbox/workspaces/<name>/` for editor access. Remote backends: access via Remote-SSH, SSHFS, or rsync-on-demand — no host-side path. |
 | **session window** | Host tmux window for an interactive session, named `cbox:<name>`. Autonomous sessions have no window. |
 | **session kind** | `interactive` or `autonomous`. Surfaced in `cbox list` output. |
@@ -71,14 +72,14 @@ orthogonal. Connection applies to interactive sessions only.
 | **alive** | Session's socket exists. Reconnectable. |
 | **destroyed** | Session's socket is gone. Unrecoverable. Workspace persists unless explicitly removed. |
 | **attached** | At least one SSH client is connected to the dtach socket. Interactive only. |
-| **detached** | No SSH clients connected; dtach (and Claude) still running. Interactive only. |
+| **detached** | No SSH clients connected; dtach (and the **agent**) still running. Interactive only. |
 
 ### Session kinds
 
 | Term | Definition |
 |---|---|
 | **interactive session** | Default kind. Uses dtach for inner persistence; appears as a host tmux window. User attaches/detaches freely. |
-| **autonomous session** | Created by `cbox run`. Uses container tmux (headless). Returns immediately after creation. Inspectable via SSH. See ADR 005. |
+| **autonomous session** | Created by `cbox run`. Uses dtach in detached mode (`dtach -n`) — same socket layout as an interactive session, no host tmux window. Spawns the tier's **agent** with the prompt as a positional argument; returns immediately. Inspectable via SSH and attachable via `cbox <name>`. See ADR 005. |
 
 ## Build inputs
 
@@ -153,8 +154,8 @@ persistent state on the session.
 
 | Flag | Definition |
 |---|---|
-| **`--shell`** | First invocation opens a shell instead of starting Claude. |
-| **`--claude`** | Subsequent invocation starts another Claude instead of opening a shell. |
+| **`--shell`** | First invocation opens a shell instead of starting the tier's **agent**. |
+| **`--claude`** | Subsequent invocation starts another instance of the tier's **agent** instead of opening a shell. Named historically; works for any agent. |
 | **`--attach`** | Invocation reattaches to the session's existing dtach instead of creating a new connection. |
 
 ## Non-goals
