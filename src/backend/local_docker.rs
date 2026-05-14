@@ -459,9 +459,6 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn dind_smoke_via_backend() {
-        use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-        use futures_util::StreamExt;
-
         let backend = LocalDockerBackend::new().expect("connect to docker");
 
         // Pre-flight: the tier image must exist. We don't build it here
@@ -534,40 +531,130 @@ mod tests {
             "expected non-empty docker server version"
         );
         teardown.expect("destroy tier");
+    }
 
-        // Helper avoids ambient `use bollard::*` polluting the module.
-        // Returns (exit_code, captured_output).
-        async fn exec_capture(
-            docker: &bollard::Docker,
-            container: &str,
-            cmd: Vec<&str>,
-        ) -> Result<(i64, String)> {
-            let exec = docker
-                .create_exec(
-                    container,
-                    CreateExecOptions {
-                        attach_stdout: Some(true),
-                        attach_stderr: Some(true),
-                        cmd: Some(cmd),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            let opts = StartExecOptions {
-                detach: false,
-                ..Default::default()
-            };
-            let mut buf = String::new();
-            if let StartExecResults::Attached { mut output, .. } =
-                docker.start_exec(&exec.id, Some(opts)).await?
-            {
-                while let Some(chunk) = output.next().await {
-                    let chunk = chunk?;
-                    buf.push_str(&chunk.to_string());
-                }
-            }
-            let info = docker.inspect_exec(&exec.id).await?;
-            Ok((info.exit_code.unwrap_or(-1), buf))
+    /// Guard against regressions of `passwd -d cbox` in `base/Dockerfile`.
+    /// Ubuntu 24.04 ships new users with `cbox:!:…` in `/etc/shadow`, which
+    /// OpenSSH 9.6 with `UsePAM no` treats as fully locked — rejecting
+    /// pubkey auth before even reading `authorized_keys`. The deleted-
+    /// password state shows up as an empty second field.
+    #[tokio::test]
+    #[ignore]
+    async fn cbox_account_is_not_password_locked() {
+        let backend = LocalDockerBackend::new().expect("connect to docker");
+        if backend
+            .docker()
+            .inspect_image(DIND_TEST_IMAGE)
+            .await
+            .is_err()
+        {
+            panic!(
+                "missing image {DIND_TEST_IMAGE}. Build it first: \
+                 CBOX_CONFIG=examples/full-setup/cbox.yaml \
+                 cargo run -- build dev"
+            );
         }
+
+        let tier = "passwd-guard-test";
+        let _ = backend.destroy(tier).await;
+
+        let cfg = TierRunConfig {
+            image: DIND_TEST_IMAGE.to_string(),
+            env: Vec::new(),
+            network_mode: NetworkMode::Bridge,
+            privileged: true,
+            mounts: Vec::new(),
+        };
+        backend.ensure_running(tier, &cfg).await.expect("start tier");
+
+        // `/etc/shadow` is root-readable only, so the exec runs as root
+        // explicitly. May briefly fail while the entrypoint is still
+        // populating the file; poll for a successful exec.
+        let mut line = None;
+        for _ in 0..30 {
+            match exec_capture_as(
+                backend.docker(),
+                &container_name(tier),
+                Some("root"),
+                vec!["sh", "-c", "grep '^cbox:' /etc/shadow"],
+            )
+            .await
+            {
+                Ok((0, out)) if !out.trim().is_empty() => {
+                    line = Some(out);
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+            }
+        }
+
+        let teardown = backend.destroy(tier).await;
+
+        let line = line.expect("getent shadow cbox returned nothing");
+        // shadow(5) format: name:passwd:lastchange:min:max:warn:inactive:expire:reserved
+        let pw_field = line
+            .trim()
+            .split(':')
+            .nth(1)
+            .expect("shadow line missing passwd field");
+        assert!(
+            !pw_field.starts_with('!') && !pw_field.starts_with('*'),
+            "cbox account is locked ({line:?}); did `passwd -d cbox` get removed from base/Dockerfile?"
+        );
+        assert!(
+            pw_field.is_empty(),
+            "expected empty passwd field after `passwd -d cbox`, got {pw_field:?} ({line:?})"
+        );
+        teardown.expect("destroy tier");
+    }
+
+    /// Helper for execing a command in a running container and capturing
+    /// stdout+stderr. Returns (exit_code, captured_output).
+    async fn exec_capture(
+        docker: &bollard::Docker,
+        container: &str,
+        cmd: Vec<&str>,
+    ) -> Result<(i64, String)> {
+        exec_capture_as(docker, container, None, cmd).await
+    }
+
+    /// Same as [`exec_capture`] but optionally runs the command as a
+    /// specific user inside the container.
+    async fn exec_capture_as(
+        docker: &bollard::Docker,
+        container: &str,
+        user: Option<&str>,
+        cmd: Vec<&str>,
+    ) -> Result<(i64, String)> {
+        use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+        use futures_util::StreamExt;
+
+        let exec = docker
+            .create_exec(
+                container,
+                CreateExecOptions {
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    cmd: Some(cmd),
+                    user,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let opts = StartExecOptions {
+            detach: false,
+            ..Default::default()
+        };
+        let mut buf = String::new();
+        if let StartExecResults::Attached { mut output, .. } =
+            docker.start_exec(&exec.id, Some(opts)).await?
+        {
+            while let Some(chunk) = output.next().await {
+                let chunk = chunk?;
+                buf.push_str(&chunk.to_string());
+            }
+        }
+        let info = docker.inspect_exec(&exec.id).await?;
+        Ok((info.exit_code.unwrap_or(-1), buf))
     }
 }
