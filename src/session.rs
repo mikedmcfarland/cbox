@@ -204,7 +204,10 @@ mod tests {
         // Idempotent teardown of any prior container.
         let _ = backend.destroy(tier).await;
 
-        let kp = ensure_keypair().expect("generate keypair");
+        let kp = tokio::task::spawn_blocking(ensure_keypair)
+            .await
+            .expect("join")
+            .expect("generate keypair");
         let cfg = TierRunConfig {
             image: IMAGE.to_string(),
             env: vec![(AUTHORIZED_KEYS_ENV.to_string(), kp.public_key.clone())],

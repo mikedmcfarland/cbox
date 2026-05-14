@@ -22,7 +22,9 @@ pub async fn run(name: String, workspace: bool) -> Result<()> {
     let cfg = Config::load(&cfg_path)
         .with_context(|| format!("load config from {}", cfg_path.display()))?;
 
-    let keypair = ensure_keypair()?;
+    let keypair = tokio::task::spawn_blocking(ensure_keypair)
+        .await
+        .context("join ensure_keypair task")??;
     let backend = LocalDockerBackend::new()?;
 
     // Sessions can live in any tier; Phase 2 scans each running tier for
@@ -89,7 +91,10 @@ async fn remove_workspace_for(cfg: &Config, name: &str) -> Result<()> {
     let mut removed_any = false;
     for tier_name in cfg.tiers.keys() {
         let dir = session_dir(tier_name, name)?;
-        if dir.exists() {
+        if tokio::fs::try_exists(&dir)
+            .await
+            .with_context(|| format!("stat workspace {}", dir.display()))?
+        {
             tokio::fs::remove_dir_all(&dir)
                 .await
                 .with_context(|| format!("remove workspace {}", dir.display()))?;

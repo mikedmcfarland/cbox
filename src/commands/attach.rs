@@ -75,7 +75,16 @@ async fn prepare(
     let cfg = Config::load(&cfg_path)
         .with_context(|| format!("load config from {}", cfg_path.display()))?;
 
-    let project_source = resolve_project(&cfg, project)?;
+    // resolve_project / prepare_session_workspace do filesystem + git
+    // subprocess work; ensure_keypair runs ssh-keygen. All must be
+    // offloaded so the current_thread runtime isn't blocked.
+    let project_source = {
+        let cfg = cfg.clone();
+        let project = project.map(str::to_owned);
+        tokio::task::spawn_blocking(move || resolve_project(&cfg, project.as_deref()))
+            .await
+            .context("join resolve_project task")??
+    };
     let tier_name = resolve_tier(&cfg, &project_source, tier_override)?;
     let tier_cfg = cfg
         .tiers
@@ -83,7 +92,9 @@ async fn prepare(
         .with_context(|| format!("tier {tier_name:?} not defined"))?
         .clone();
 
-    let keypair = ensure_keypair()?;
+    let keypair = tokio::task::spawn_blocking(ensure_keypair)
+        .await
+        .context("join ensure_keypair task")??;
     let run_cfg = build_run_config(&tier_name, &tier_cfg, &keypair)?;
 
     let backend = LocalDockerBackend::new()?;
@@ -92,7 +103,17 @@ async fn prepare(
         .await
         .with_context(|| format!("start tier {tier_name:?}"))?;
 
-    prepare_session_workspace(&tier_name, name, &project_source, branch)?;
+    {
+        let tier_name = tier_name.clone();
+        let session = name.to_owned();
+        let project_source = project_source.clone();
+        let branch = branch.map(str::to_owned);
+        tokio::task::spawn_blocking(move || {
+            prepare_session_workspace(&tier_name, &session, &project_source, branch.as_deref())
+        })
+        .await
+        .context("join prepare_session_workspace task")??;
+    }
     let workspace_container = container_session_path(name)?;
 
     let ssh = SshConn {
