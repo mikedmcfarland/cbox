@@ -4,6 +4,7 @@ check:
     cargo check
 
 lint:
+    cargo fmt -- --check
     cargo clippy --all-targets -- -D warnings
 
 format:
