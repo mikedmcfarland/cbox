@@ -20,12 +20,15 @@ set -euo pipefail
 
 # authorized_keys must be written *before* the sudo re-exec: sudo's
 # default env_keep policy strips arbitrary env vars even with -E, so the
-# env var doesn't survive the re-exec. cbox owns /home/cbox/.ssh, so it
-# can write authorized_keys without root anyway.
+# env var doesn't survive the re-exec. sshd always authenticates the
+# cbox user, so hardcode that path rather than $(id -un) — a derived
+# image (or someone shelling into the base directly) could land as root
+# and write to /root/.ssh/, which sshd wouldn't consult.
 if [ -n "${CBOX_AUTHORIZED_KEYS:-}" ]; then
-    install -d -m 0700 "/home/$(id -un)/.ssh"
-    printf '%s\n' "$CBOX_AUTHORIZED_KEYS" > "/home/$(id -un)/.ssh/authorized_keys"
-    chmod 0600 "/home/$(id -un)/.ssh/authorized_keys"
+    install -d -m 0700 -o cbox -g cbox /home/cbox/.ssh
+    printf '%s\n' "$CBOX_AUTHORIZED_KEYS" > /home/cbox/.ssh/authorized_keys
+    chown cbox:cbox /home/cbox/.ssh/authorized_keys
+    chmod 0600 /home/cbox/.ssh/authorized_keys
 fi
 unset CBOX_AUTHORIZED_KEYS
 
