@@ -26,6 +26,10 @@ containers. Standalone tool (ADR 008); user config lives at
   Never add `Co-Authored-By` trailers.
 - **PR template.** `.github/pull_request_template.md` is the source of
   truth — fill in TL;DR, What changed, How to test, Why.
+- **PR body formatting.** Don't hard-wrap paragraphs or bullets in PR
+  descriptions — GitHub reflows markdown, and hard breaks produce
+  ragged right edges in the rendered view. Hard-wrap commit message
+  bodies at ~72 chars (git convention); leave PR bodies unwrapped.
 
 ## Inner loop
 
