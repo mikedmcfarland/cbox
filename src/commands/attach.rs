@@ -79,8 +79,7 @@ async fn prepare(
     attach_flag: bool,
 ) -> Result<Prep> {
     let cfg_path = Config::default_path()?;
-    let cfg = Config::load(&cfg_path)
-        .with_context(|| format!("load config from {}", cfg_path.display()))?;
+    let cfg = Config::load_async(cfg_path).await?;
 
     // resolve_project / prepare_session_workspace do filesystem + git
     // subprocess work; ensure_keypair runs ssh-keygen. All must be
@@ -102,7 +101,14 @@ async fn prepare(
     let keypair = tokio::task::spawn_blocking(ensure_keypair)
         .await
         .context("join ensure_keypair task")??;
-    let run_cfg = build_run_config(&tier_name, &tier_cfg, &keypair)?;
+    let run_cfg = {
+        let tier_name = tier_name.clone();
+        let tier_cfg = tier_cfg.clone();
+        let keypair = keypair.clone();
+        tokio::task::spawn_blocking(move || build_run_config(&tier_name, &tier_cfg, &keypair))
+            .await
+            .context("join build_run_config task")??
+    };
 
     let backend = LocalDockerBackend::new()?;
     let endpoint = backend

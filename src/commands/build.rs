@@ -15,8 +15,7 @@ use crate::config::Config;
 
 pub async fn run(tier: Option<String>, no_cache: bool) -> Result<()> {
     let cfg_path = Config::default_path()?;
-    let cfg = Config::load(&cfg_path)
-        .with_context(|| format!("load config from {}", cfg_path.display()))?;
+    let cfg = Config::load_async(cfg_path).await?;
 
     let base_dir = resolve_base_dir()?;
 

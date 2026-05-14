@@ -26,8 +26,7 @@ pub async fn run() -> Result<()> {
 /// Used by integration tests to capture and assert on output.
 pub(crate) async fn run_with(out: &mut impl Write) -> Result<()> {
     let cfg_path = Config::default_path()?;
-    let cfg = Config::load(&cfg_path)
-        .with_context(|| format!("load config from {}", cfg_path.display()))?;
+    let cfg = Config::load_async(cfg_path).await?;
 
     let backend = LocalDockerBackend::new()?;
 

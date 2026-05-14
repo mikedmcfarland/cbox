@@ -251,6 +251,17 @@ impl Config {
         Ok(cfg)
     }
 
+    /// Async wrapper around [`Config::load`] for use from tokio handlers
+    /// (current-thread runtime). `load` does synchronous filesystem I/O,
+    /// so call sites in async fns must offload it via `spawn_blocking`.
+    pub async fn load_async(path: PathBuf) -> Result<Self> {
+        let display = path.display().to_string();
+        tokio::task::spawn_blocking(move || Config::load(&path))
+            .await
+            .context("join Config::load task")?
+            .with_context(|| format!("load config from {display}"))
+    }
+
     /// Resolve the config path. Precedence:
     /// 1. `$CBOX_CONFIG` (explicit override).
     /// 2. `$HOME/.config/cbox/cbox.yaml` (default).
