@@ -5,8 +5,8 @@ Project-specific guidance for Claude Code working in this repo.
 ## Project
 
 cbox — Rust binary that runs Claude Code sessions in isolated Docker
-containers. Standalone tool (ADR 008); user config lives at
-`~/.config/cbox/`. Design and rationale: `docs/plans/`, `docs/`, `examples/`.
+containers. User config lives at `~/.config/cbox/`. Design and
+rationale: `docs/plans/`, `docs/`, `examples/`.
 
 ## Workflow
 
