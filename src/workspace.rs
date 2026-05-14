@@ -272,4 +272,96 @@ projects:
             PathBuf::from("/workspace/auth-fix")
         );
     }
+
+    /// Prepare workspaces against a real local git repo and assert each of
+    /// the three branch shapes lands the checkout on the expected branch:
+    /// no branch (inherits source HEAD), an existing branch (`checkout`
+    /// succeeds via the clone's remote-tracking refs), and a new branch
+    /// (`checkout` fails, fallback `checkout -b` succeeds). All three are
+    /// exercised in a single test because they share a HOME swap and
+    /// cargo runs tests in parallel — separate functions would race.
+    #[test]
+    fn prepare_session_workspace_covers_branch_shapes() {
+        // Snapshot HOME so a panic doesn't leak the tempdir into the
+        // developer's real `~/.cbox/`.
+        struct HomeGuard(Option<std::ffi::OsString>);
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.0.take() {
+                        Some(v) => std::env::set_var("HOME", v),
+                        None => std::env::remove_var("HOME"),
+                    }
+                }
+            }
+        }
+
+        let tmp_home = tempfile::tempdir().expect("home tempdir");
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: this test is single-threaded with respect to HOME within
+        // its own scope; the RAII guard restores HOME on panic. Other
+        // tests in this binary that also swap HOME synchronise via being
+        // the only consumer in their crate-local scope (see
+        // `keys::tests::ensure_keypair_generates_on_first_call`).
+        unsafe { std::env::set_var("HOME", tmp_home.path()) };
+        let _home = HomeGuard(prev_home);
+
+        // Build a source repo with `main` checked out and an extra branch
+        // `existing-feature` pointing at HEAD. `git clone` from a local
+        // path picks up both as remote-tracking refs; the DWIM behaviour
+        // of `git checkout existing-feature` then creates the local
+        // branch on demand.
+        let src = tempfile::tempdir().expect("src tempdir");
+        run_git(src.path(), &["init", "-q", "-b", "main"]);
+        run_git(src.path(), &["config", "user.email", "test@example.com"]);
+        run_git(src.path(), &["config", "user.name", "test"]);
+        std::fs::write(src.path().join("README"), b"hello\n").expect("write README");
+        run_git(src.path(), &["add", "."]);
+        run_git(src.path(), &["commit", "-q", "-m", "init"]);
+        run_git(src.path(), &["branch", "existing-feature"]);
+
+        let tier = "branch-test";
+        let project = ProjectSource::Path(src.path().to_path_buf());
+
+        // Case 1: no branch arg → inherits source HEAD (`main`).
+        let dir =
+            prepare_session_workspace(tier, "no-branch", &project, None).expect("clone no-branch");
+        assert_eq!(head_branch(&dir), "main");
+
+        // Idempotency: re-running with the same session is a no-op.
+        let dir2 = prepare_session_workspace(tier, "no-branch", &project, None)
+            .expect("re-run no-branch");
+        assert_eq!(dir, dir2);
+
+        // Case 2: existing branch → `checkout` succeeds first try.
+        let dir = prepare_session_workspace(tier, "existing", &project, Some("existing-feature"))
+            .expect("clone existing");
+        assert_eq!(head_branch(&dir), "existing-feature");
+
+        // Case 3: new branch → `checkout` fails, falls back to `checkout -b`.
+        let dir = prepare_session_workspace(tier, "fresh", &project, Some("fresh-branch"))
+            .expect("clone fresh");
+        assert_eq!(head_branch(&dir), "fresh-branch");
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .status()
+            .unwrap_or_else(|e| panic!("invoke git {args:?}: {e}"));
+        assert!(status.success(), "git {args:?} failed: {status}");
+    }
+
+    fn head_branch(dir: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .expect("git rev-parse");
+        assert!(out.status.success(), "rev-parse failed: {:?}", out);
+        String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+    }
 }
