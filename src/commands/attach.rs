@@ -15,6 +15,7 @@ use crate::backend::Backend;
 use crate::backend::local_docker::LocalDockerBackend;
 use crate::commands::common::{build_run_config, resolve_tier};
 use crate::config::Config;
+use crate::credentials::OnePasswordResolver;
 use crate::keys::ensure_keypair;
 use crate::session::{LaunchCommand, dtach_command, is_alive, shell_in_workspace_command};
 use crate::ssh::{SshConn, shell_quote};
@@ -101,14 +102,8 @@ async fn prepare(
     let keypair = tokio::task::spawn_blocking(ensure_keypair)
         .await
         .context("join ensure_keypair task")??;
-    let run_cfg = {
-        let tier_name = tier_name.clone();
-        let tier_cfg = tier_cfg.clone();
-        let keypair = keypair.clone();
-        tokio::task::spawn_blocking(move || build_run_config(&tier_name, &tier_cfg, &keypair))
-            .await
-            .context("join build_run_config task")??
-    };
+    let resolver = OnePasswordResolver;
+    let run_cfg = build_run_config(&tier_name, &cfg, &tier_cfg, &keypair, &resolver).await?;
 
     let backend = LocalDockerBackend::new()?;
     let endpoint = backend
