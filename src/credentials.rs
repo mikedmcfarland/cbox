@@ -11,6 +11,7 @@
 //! parsed at config-load time and bind-mounted as-is.
 
 use std::process::Stdio;
+use std::time::Duration;
 
 #[cfg(test)]
 use std::collections::HashMap;
@@ -18,6 +19,14 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use tokio::process::Command;
+use tokio::time::timeout;
+
+/// Upper bound on a single `op read` invocation. The 1Password CLI can
+/// block indefinitely if the vault is locked or biometric/interactive
+/// auth is required; without a ceiling, session bring-up hangs with no
+/// hint of why. 20s is generous for an unlocked, cached session and
+/// short enough that a stuck CLI surfaces fast.
+const OP_READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Resolve a credential `source:` URI into a plaintext value.
 ///
@@ -44,12 +53,22 @@ impl CredentialResolver for OnePasswordResolver {
                  only 1Password sources are supported in v1"
             );
         }
-        let output = Command::new("op")
-            .args(["read", "--no-newline", source])
-            .stdin(Stdio::null())
-            .output()
-            .await
-            .context("invoke `op read` (is the 1Password CLI installed and on PATH?)")?;
+        let output = timeout(
+            OP_READ_TIMEOUT,
+            Command::new("op")
+                .args(["read", "--no-newline", source])
+                .stdin(Stdio::null())
+                .output(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "`op read {source}` timed out after {}s \
+                 (is 1Password unlocked and signed in?)",
+                OP_READ_TIMEOUT.as_secs()
+            )
+        })?
+        .context("invoke `op read` (is the 1Password CLI installed and on PATH?)")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(

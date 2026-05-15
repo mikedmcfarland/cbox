@@ -256,7 +256,9 @@ tiers:
         let _home = set_home(tmp.path());
 
         let settings_file = tmp.path().join("settings.json");
-        std::fs::write(&settings_file, r#"{"sandbox":{}}"#).unwrap();
+        tokio::fs::write(&settings_file, r#"{"sandbox":{}}"#)
+            .await
+            .unwrap();
 
         let cfg = cfg_with_creds_and_settings(&settings_file);
         let tier_cfg = cfg.tiers["dev"].clone();
@@ -349,7 +351,7 @@ tiers:
         let _home = set_home(tmp.path());
 
         let settings_file = tmp.path().join("settings.json");
-        std::fs::write(&settings_file, "{}").unwrap();
+        tokio::fs::write(&settings_file, "{}").await.unwrap();
 
         let cfg = cfg_with_creds_and_settings(&settings_file);
         let tier_cfg = cfg.tiers["dev"].clone();
