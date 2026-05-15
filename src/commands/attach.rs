@@ -132,7 +132,7 @@ async fn prepare(
     let alive = is_alive(&ssh, name).await?;
     let action = decide_action(alive, shell_flag, claude_flag, attach_flag);
 
-    let agent_command = tier_cfg.agent.command.clone();
+    let agent_command = interactive_agent_command(&tier_cfg);
     Ok(Prep {
         ssh,
         workspace_container,
@@ -275,6 +275,18 @@ fn wrap_login_shell(inner: &str) -> String {
     format!("bash -lc {}", crate::ssh::shell_quote(inner))
 }
 
+/// Resolve the interactive agent command for this tier. Appends
+/// `--dangerously-skip-permissions` when the tier opts in so every agent
+/// process the user starts (primary dtach, ancillary `--claude` window)
+/// inherits the setting.
+fn interactive_agent_command(tier_cfg: &crate::config::TierConfig) -> String {
+    if tier_cfg.dangerously_skip_permissions {
+        format!("{} --dangerously-skip-permissions", tier_cfg.agent.command)
+    } else {
+        tier_cfg.agent.command.clone()
+    }
+}
+
 fn ancillary_suffix(kind: &str) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -314,6 +326,29 @@ mod tests {
         assert_eq!(
             decide_action(true, false, true, true),
             Action::SelectExisting
+        );
+    }
+
+    #[test]
+    fn interactive_agent_command_respects_skip_permissions() {
+        use crate::config::{AgentConfig, NetworkMode, TierConfig};
+
+        let mk = |skip: bool| TierConfig {
+            layers: vec![],
+            network: NetworkMode::Bridge,
+            credentials: vec![],
+            dangerously_skip_permissions: skip,
+            settings: None,
+            backend: None,
+            agent: AgentConfig {
+                command: "claude".to_string(),
+                autonomous_args: vec!["-p".to_string()],
+            },
+        };
+        assert_eq!(interactive_agent_command(&mk(false)), "claude");
+        assert_eq!(
+            interactive_agent_command(&mk(true)),
+            "claude --dangerously-skip-permissions"
         );
     }
 

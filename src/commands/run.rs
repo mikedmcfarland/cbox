@@ -18,7 +18,7 @@ use crate::backend::Backend;
 use crate::backend::TierState;
 use crate::backend::local_docker::LocalDockerBackend;
 use crate::commands::common::{build_run_config, resolve_tier};
-use crate::config::Config;
+use crate::config::{Config, TierConfig};
 use crate::credentials::OnePasswordResolver;
 use crate::keys::{KeyPair, ensure_keypair};
 use crate::session::{is_alive, socket_path};
@@ -113,13 +113,7 @@ pub async fn run(
     // Whole thing passed as one ssh arg so the remote shell parses our
     // quoting intact (sshd would otherwise space-join multi-arg into
     // `bash -c <first-word>`).
-    let mut agent_parts: Vec<String> = Vec::with_capacity(2 + tier_cfg.agent.autonomous_args.len());
-    agent_parts.push(shell_quote(&tier_cfg.agent.command));
-    for a in &tier_cfg.agent.autonomous_args {
-        agent_parts.push(shell_quote(a));
-    }
-    agent_parts.push(shell_quote(&prompt));
-    let agent_cmd = agent_parts.join(" ");
+    let agent_cmd = build_autonomous_agent_command(&tier_cfg, &prompt);
     let inner = format!(
         "cd {ws} && exec dtach -n {sock} {agent}",
         ws = shell_quote(&workspace.display().to_string()),
@@ -144,6 +138,23 @@ pub async fn run(
          attach with `cbox {name}`"
     );
     Ok(())
+}
+
+/// Assemble the shell-quoted command line for the autonomous agent.
+/// Shape: `<cmd> [--dangerously-skip-permissions] <autonomous_args...>
+/// <prompt>`. The skip-permissions flag goes before `autonomous_args`
+/// so Claude Code's `-p` consumes the right positional.
+fn build_autonomous_agent_command(tier_cfg: &TierConfig, prompt: &str) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(3 + tier_cfg.agent.autonomous_args.len());
+    parts.push(shell_quote(&tier_cfg.agent.command));
+    if tier_cfg.dangerously_skip_permissions {
+        parts.push("--dangerously-skip-permissions".to_string());
+    }
+    for a in &tier_cfg.agent.autonomous_args {
+        parts.push(shell_quote(a));
+    }
+    parts.push(shell_quote(prompt));
+    parts.join(" ")
 }
 
 /// Refuse to start a session whose name already lives in some *other*
@@ -195,6 +206,48 @@ async fn ensure_session_not_alive_elsewhere(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+
+    fn tier_cfg_with(skip: bool, command: &str, args: &[&str]) -> TierConfig {
+        TierConfig {
+            layers: vec![],
+            network: crate::config::NetworkMode::Bridge,
+            credentials: vec![],
+            dangerously_skip_permissions: skip,
+            settings: None,
+            backend: None,
+            agent: AgentConfig {
+                command: command.to_string(),
+                autonomous_args: args.iter().map(|s| s.to_string()).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn autonomous_cmd_default_shape() {
+        let tier = tier_cfg_with(false, "claude", &["-p"]);
+        let cmd = build_autonomous_agent_command(&tier, "do the thing");
+        assert_eq!(cmd, "claude -p 'do the thing'");
+    }
+
+    #[test]
+    fn autonomous_cmd_inserts_skip_perms_flag() {
+        let tier = tier_cfg_with(true, "claude", &["-p"]);
+        let cmd = build_autonomous_agent_command(&tier, "x");
+        // Flag comes before autonomous_args so `-p` still consumes the
+        // prompt positional.
+        assert_eq!(cmd, "claude --dangerously-skip-permissions -p x");
+    }
+
+    #[test]
+    fn autonomous_cmd_shell_quotes_command_and_args() {
+        let tier = tier_cfg_with(false, "my agent", &["--flag with space"]);
+        let cmd = build_autonomous_agent_command(&tier, "p");
+        assert!(cmd.starts_with("'my agent' "), "{cmd}");
+        assert!(cmd.contains("'--flag with space'"), "{cmd}");
+    }
+
     /// End-to-end exercise of `cbox run` + `cbox list` + `cbox exec`
     /// against a real `cbox-tier-dev:latest`. Uses a mock agent config
     /// (`bash -c '...'`) so we don't need a working Claude install — the
