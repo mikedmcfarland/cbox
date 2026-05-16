@@ -8,11 +8,17 @@
 //! whichever OAuth flow the MCP server prompts for.
 //!
 //! Unlike `cbox <name>`, auth:
-//! - has no workspace (no project clone, no per-session worktree),
-//! - uses no dtach socket (it's a one-shot setup, not a long-running
-//!   session — exiting the agent ends the flow),
 //! - never registers as a session in `/run/cbox/` (so it doesn't keep
-//!   the tier instance "busy" for auto-pause / cleanup purposes).
+//!   the tier instance "busy" for auto-pause / cleanup purposes),
+//! - skips the per-session workspace clone (no project arg, no
+//!   `prepare_session_workspace` call — auth runs in `$HOME`),
+//! - uses no dtach socket (it's a one-shot setup, not a long-running
+//!   session — exiting the agent ends the flow).
+//!
+//! The tier-level workspace bind mount at `/workspace/` is still
+//! attached — that's per-tier plumbing every container shares, and
+//! the host-side parent dir is reused by any later sessions. Auth
+//! just doesn't put anything there.
 //!
 //! The OAuth tokens themselves land on the per-tier `.claude` named
 //! volume (see [`crate::commands::common::CLAUDE_STATE_TARGET`]), so

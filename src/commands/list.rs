@@ -54,9 +54,12 @@ pub(crate) async fn run_with(out: &mut impl Write) -> Result<()> {
                         .context("join ensure_keypair task")??,
                 );
             }
+            let kp = keypair
+                .as_ref()
+                .context("ensure_keypair did not initialize keypair")?;
             let ssh = SshConn {
                 endpoint,
-                identity_file: keypair.as_ref().unwrap().private_key_path.clone(),
+                identity_file: kp.private_key_path.clone(),
             };
             list_active(&ssh)
                 .await
