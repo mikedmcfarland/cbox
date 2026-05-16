@@ -33,7 +33,8 @@ are cbox.yaml shorthand for `(repo, tier)`.
 | **tier instance** | Runtime instantiation of a tier on a backend. One per (tier × backend). Backend-neutral noun: covers Docker containers, GCE VMs, Codespaces workspaces. Has lifecycle states. |
 | **tier volume** | Host-side persistent storage at `~/.cbox/volumes/<tier>/`. Mode `0700`, user-owned. The local **trust boundary**. See ADR 012. |
 | **tier endpoint** | SSH connectivity for a running tier instance: host, port, user, ssh_options. Code type: `TierEndpoint`. See ADR 011. |
-| **tier state** | Persistent contents of a tier volume that accumulate across sessions: Claude Code's `.claude.json` (preferences, MCP configs, OAuth MCP tokens), Docker daemon state and image cache, anything written to `/home/cbox/`. Survives instance pause/stop/resume. Lost only on tier destroy. See ADR 002, ADR 006, ADR 012. |
+| **tier state** | Persistent contents of a tier that accumulate across sessions: Claude Code's `.claude.json` (preferences, MCP configs, OAuth MCP tokens), Docker daemon state and image cache, anything written to `/home/cbox/`. Survives instance pause/stop/resume **and image rebuilds**. Lost only on tier destroy. See ADR 002, ADR 006, ADR 012, ADR 014. |
+| **claude state volume** | Per-tier Docker named volume `cbox-tier-<tier>-claude` mounted at `/home/cbox/.claude` in the tier instance. Carries `.claude.json`, MCP server registrations, and OAuth MCP tokens. Survives `cbox build <tier>`. See ADR 014. |
 | **tier settings** | Claude Code `settings.json` file mounted into the tier instance. Configures **Claude sandbox**, **permissions**, **allowed domains**. Referenced via the tier's `settings:` field in cbox.yaml. |
 | **agent** | The command a session launches inside the tier. Per-tier via `tiers.<name>.agent.{command, autonomous_args}` in cbox.yaml; defaults to Claude Code (`command: claude`, `autonomous_args: [-p]`). Exists so per-tier mocks are possible in tests and so non-Claude agents can be wired in without code changes. Intentionally low-key — Claude Code remains the default and the only blessed agent. |
 
@@ -107,8 +108,9 @@ is fixed, environment is one-per-user, layers are many-per-tier.
 | Term | Definition |
 |---|---|
 | **MCP / MCP server** | Model Context Protocol server. Claude Code's term for an external server providing tools, resources, or prompts. cbox adopts verbatim; see Claude Code docs. |
-| **token MCP registration** | cbox mechanism for registering token-authenticated MCPs at tier-instance startup. An init.d script reads a credential env var and runs `claude mcp add ... --header`. Resulting header persists in `.claude.json` on the tier volume. |
-| **OAuth MCP registration** | cbox mechanism for OAuth-authenticated MCPs. User runs `cbox auth <tier>` once; Claude Code stores resulting tokens on the tier volume. *Not* declared in cbox.yaml — managed imperatively. OAuth MCP state is **tier state**, not a **credential**. |
+| **init.d script** | Idempotent `*.sh` under `/cbox/init.d/` in a tier instance. `cbox-init` runs all of them once per container start, after dockerd is reachable. Delivered by layers — each layer's Dockerfile `COPY init.d/ /cbox/init.d/`. Typical use is **token MCP registration**. See ADR 013. |
+| **token MCP registration** | cbox mechanism for registering token-authenticated MCPs at tier-instance startup. An **init.d script** reads a credential env var and runs `claude mcp add ... --header`. Resulting header persists in `.claude.json` on the **claude state volume**. |
+| **OAuth MCP registration** | cbox mechanism for OAuth-authenticated MCPs. User runs `cbox auth <tier>` once; Claude Code stores resulting tokens on the **claude state volume**. *Not* declared in cbox.yaml — managed imperatively. OAuth MCP state is **tier state**, not a **credential**. |
 
 ## Trust and security
 
@@ -144,8 +146,9 @@ operates on sessions.
 | **build** | `cbox build [tier]`. Builds the tier image (the build chain). |
 | **auth** | `cbox auth <tier>`. One-time interactive **OAuth MCP registration** for a tier. Scoped to OAuth MCPs only. |
 | **list** | `cbox list`. Enumerates sessions and tier instances. |
-| **cleanup** | `cbox cleanup`. Destroys idle tier instances. Operator convenience; not part of normal lifecycle. |
-| **`cbox tier <op>`** | Tier-instance-level operations: `stop`, `pause`, `resume`, `list`. Distinct from session-level verbs at top level. |
+| **cleanup** | `cbox cleanup`. Stops idle tier instances (no live sessions). Operator convenience; not part of normal lifecycle. Distinct from **destroy** — stopped tiers keep their **claude state volume** and their workspaces, and resume via `cbox <name>` or `cbox tier resume`. |
+| **`cbox tier <op>`** | Tier-instance-level operations: `stop`, `pause`, `resume`. Distinct from session-level verbs at top level. `cbox list` covers the inspection role. |
+| **ssh-config** | `cbox ssh-config`. Regenerates `~/.ssh/cbox_hosts` with one `Host cbox-<tier>` stanza per running tier (loopback + current dynamic port + identity file). Users `Include` it once from `~/.ssh/config` so editors and shells can `ssh cbox-<tier>`. Idempotent and overwriting — the host port changes on every tier restart. |
 
 ### Action override flags
 
