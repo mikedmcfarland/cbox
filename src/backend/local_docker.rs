@@ -309,14 +309,19 @@ async fn create_container(docker: &Docker, tier: &str, config: &TierRunConfig) -
 fn binds_for(mounts: &[Mount]) -> Vec<String> {
     mounts
         .iter()
-        .filter_map(|m| match &m.source {
-            MountSource::HostPath(p) => {
-                let mode = if m.read_only { ":ro" } else { "" };
-                Some(format!("{}:{}{}", p.display(), m.target.display(), mode,))
-            }
-            // Named volumes will be encoded into ContainerCreateBody.mounts
-            // when Phase 2 needs them — bind syntax is enough today.
-            MountSource::Volume(_) => None,
+        .map(|m| {
+            let source = match &m.source {
+                MountSource::HostPath(p) => p.display().to_string(),
+                // Docker tells a named volume from a bind by checking
+                // whether the source contains a slash. A bare name like
+                // `cbox-tier-dev-claude` is interpreted as a named
+                // volume and auto-created on first use, which is exactly
+                // the behaviour we want for the per-tier `.claude`
+                // volume (plan §Open questions).
+                MountSource::Volume(name) => name.clone(),
+            };
+            let mode = if m.read_only { ":ro" } else { "" };
+            format!("{}:{}{}", source, m.target.display(), mode)
         })
         .collect()
 }
@@ -376,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn binds_render_host_paths_with_ro_when_set() {
+    fn binds_render_host_paths_and_volumes_with_ro_when_set() {
         let mounts = vec![
             Mount {
                 source: MountSource::HostPath("/etc/foo".into()),
@@ -393,9 +398,24 @@ mod tests {
                 target: "/in/data".into(),
                 read_only: false,
             },
+            Mount {
+                source: MountSource::Volume("cache".into()),
+                target: "/in/cache".into(),
+                read_only: true,
+            },
         ];
         let binds = binds_for(&mounts);
-        assert_eq!(binds, vec!["/etc/foo:/in/foo", "/etc/bar:/in/bar:ro"]);
+        assert_eq!(
+            binds,
+            vec![
+                "/etc/foo:/in/foo",
+                "/etc/bar:/in/bar:ro",
+                // Named volumes: Docker treats slash-free sources as
+                // volume names and auto-creates them on first use.
+                "data:/in/data",
+                "cache:/in/cache:ro",
+            ]
+        );
     }
 
     #[test]

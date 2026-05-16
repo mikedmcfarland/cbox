@@ -7,8 +7,9 @@
 //! The implicit `local` backend (Docker) is the only implementation today;
 //! see [`local_docker`].
 
-// `stop`, `list_tiers`, and MountSource::Volume are consumed by
-// `cbox tier stop`, `cbox list`, and named-volume credentials in Phase 3+.
+// `destroy` and `list_tiers` are part of the trait surface but not yet
+// reached by a command path; revisit when a `cbox tier rm` / structured
+// `cbox list --json` lands.
 #![allow(dead_code)]
 
 pub mod local_docker;
