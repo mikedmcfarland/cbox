@@ -22,6 +22,21 @@ use crate::workspace::{ProjectSource, tier_workspace_mount};
 /// without bind-mount privileges they don't have.
 pub const MANAGED_SETTINGS_TARGET: &str = "/etc/claude-code/settings.json";
 
+/// Mount target for the per-tier `.claude` named volume. Holds Claude's
+/// `.claude.json` (preferences, feature flags, MCP configs, OAuth tokens)
+/// and the OAuth credential store for MCPs that authenticate
+/// interactively. Persisted in a named volume so `cbox build <tier>`
+/// rebuilds don't wipe accumulated state.
+pub const CLAUDE_STATE_TARGET: &str = "/home/cbox/.claude";
+
+/// Name of the named volume backing [`CLAUDE_STATE_TARGET`] for one tier.
+/// Per-tier so the dev tier can't read the auto tier's tokens by virtue
+/// of sharing a volume — matches the per-tier trust boundary from
+/// ADR 012.
+pub fn claude_volume_name(tier: &str) -> String {
+    format!("cbox-tier-{tier}-claude")
+}
+
 /// Pick a tier for this session. Precedence: CLI override > project's
 /// `tier:` field > `default_tier` from cbox.yaml.
 pub fn resolve_tier(
@@ -65,7 +80,17 @@ pub async fn build_run_config(
     resolver: &dyn CredentialResolver,
 ) -> Result<TierRunConfig> {
     let mut env = vec![(AUTHORIZED_KEYS_ENV.to_string(), keypair.public_key.clone())];
-    let mut mounts = vec![tier_workspace_mount(tier)?];
+    let mut mounts = vec![
+        tier_workspace_mount(tier)?,
+        // Per-tier .claude state on a named volume so MCP tokens
+        // registered via init.d (and onboarding/feature-flag state)
+        // survive image rebuilds. See ADR 013.
+        Mount {
+            source: MountSource::Volume(claude_volume_name(tier)),
+            target: CLAUDE_STATE_TARGET.into(),
+            read_only: false,
+        },
+    ];
 
     for cred_name in &tier_cfg.credentials {
         let cred = cfg.credentials.get(cred_name).with_context(|| {
@@ -305,6 +330,17 @@ tiers:
         match &settings.source {
             MountSource::HostPath(p) => assert_eq!(p, &settings_file),
             _ => panic!("settings mount should be a host path"),
+        }
+
+        // The per-tier .claude state lives on a named volume named for
+        // its tier; rebuilding the image must not wipe it.
+        let claude_state = by_target
+            .get(std::path::Path::new(CLAUDE_STATE_TARGET))
+            .expect(".claude state mount");
+        assert!(!claude_state.read_only, ".claude must be writable");
+        match &claude_state.source {
+            MountSource::Volume(name) => assert_eq!(name, "cbox-tier-dev-claude"),
+            _ => panic!(".claude mount should be a named volume"),
         }
     }
 
