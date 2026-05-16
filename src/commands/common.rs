@@ -84,7 +84,7 @@ pub async fn build_run_config(
         tier_workspace_mount(tier)?,
         // Per-tier .claude state on a named volume so MCP tokens
         // registered via init.d (and onboarding/feature-flag state)
-        // survive image rebuilds. See ADR 013.
+        // survive image rebuilds. See ADR 014.
         Mount {
             source: MountSource::Volume(claude_volume_name(tier)),
             target: CLAUDE_STATE_TARGET.into(),

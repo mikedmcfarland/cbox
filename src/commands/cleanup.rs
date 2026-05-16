@@ -44,9 +44,12 @@ pub async fn run() -> Result<()> {
                     .context("join ensure_keypair task")??,
             );
         }
+        let kp = keypair
+            .as_ref()
+            .context("ensure_keypair did not initialize keypair")?;
         let ssh = SshConn {
             endpoint,
-            identity_file: keypair.as_ref().unwrap().private_key_path.clone(),
+            identity_file: kp.private_key_path.clone(),
         };
         let sessions = list_active(&ssh)
             .await
