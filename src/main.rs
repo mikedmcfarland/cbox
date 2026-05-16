@@ -6,6 +6,7 @@ mod build;
 mod cli;
 mod commands;
 mod config;
+mod credentials;
 mod keys;
 mod session;
 mod ssh;
