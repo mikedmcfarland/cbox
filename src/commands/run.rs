@@ -35,8 +35,7 @@ pub async fn run(
         bail!("prompt is empty; pass a non-empty prompt to `cbox run`");
     }
 
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
 
     let project_source = {
         let cfg = cfg.clone();

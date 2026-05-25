@@ -14,8 +14,7 @@ use crate::build::{ImageBuilder, TierBuildPlan, resolve_base_dir};
 use crate::config::Config;
 
 pub async fn run(tier: Option<String>, no_cache: bool) -> Result<()> {
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
 
     let base_dir = resolve_base_dir()?;
 

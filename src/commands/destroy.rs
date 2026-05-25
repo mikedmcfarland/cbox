@@ -18,8 +18,7 @@ use crate::tmux;
 use crate::workspace::{session_dir, tier_workspace_dir};
 
 pub async fn run(name: String, workspace: bool) -> Result<()> {
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
 
     let keypair = tokio::task::spawn_blocking(ensure_keypair)
         .await

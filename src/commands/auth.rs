@@ -36,8 +36,7 @@ use crate::ssh::{SshConn, shell_quote, wait_for_sshd};
 use crate::tmux;
 
 pub async fn run(tier: String) -> Result<()> {
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
     let tier_cfg = cfg
         .tiers
         .get(&tier)
