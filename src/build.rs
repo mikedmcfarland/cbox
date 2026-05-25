@@ -324,7 +324,7 @@ impl TierBuildPlan {
         }
         Ok(Self {
             tier: tier.to_string(),
-            environment_dir: cfg.environment.as_path().to_path_buf(),
+            environment_dir: cfg.environment_dir()?.to_path_buf(),
             layers,
         })
     }

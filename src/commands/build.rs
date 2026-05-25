@@ -39,15 +39,11 @@ pub async fn run(tier: Option<String>, no_cache: bool) -> Result<()> {
         .build_base(&base_dir)
         .await
         .with_context(|| format!("build base image from {}", base_dir.display()))?;
+    let environment_dir = cfg.environment_dir()?;
     builder
-        .build_environment(cfg.environment.as_path())
+        .build_environment(environment_dir)
         .await
-        .with_context(|| {
-            format!(
-                "build environment image from {}",
-                cfg.environment.as_path().display()
-            )
-        })?;
+        .with_context(|| format!("build environment image from {}", environment_dir.display()))?;
 
     for t in &tiers {
         let plan =
