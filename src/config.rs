@@ -27,7 +27,12 @@ pub const CONFIG_ENV: &str = "CBOX_CONFIG";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub environment: ExpandedPath,
+    /// Build context for the environment image. Optional *per source* so a
+    /// project's `.cbox/cbox.yaml` and a personal config can each omit it
+    /// and inherit the other's; required after merge. Read absolute via
+    /// [`Config::environment_dir`].
+    #[serde(default)]
+    pub environment: Option<ExpandedPath>,
 
     #[serde(default)]
     pub default_layers: Vec<String>,
@@ -277,7 +282,9 @@ impl Config {
     /// not absolute. Tilde expansion already happened at deserialise
     /// time, so anything still relative is relative to the yaml file.
     fn resolve_relative_paths(&mut self, base: &Path) {
-        resolve(&mut self.environment.0, base);
+        if let Some(env) = &mut self.environment {
+            resolve(&mut env.0, base);
+        }
         for layer in self.layers.values_mut() {
             resolve(&mut layer.0, base);
         }
@@ -293,10 +300,26 @@ impl Config {
         }
     }
 
+    /// Absolute path to the environment image build context, or an error if
+    /// no config source set one. Resolution happens at parse time, so the
+    /// returned path is absolute. Callers that need the directory go through
+    /// here rather than touching [`Self::environment`] directly, which is
+    /// `Option` only to support the per-source merge (see [`Self::merge`]).
+    pub fn environment_dir(&self) -> Result<&Path> {
+        self.environment
+            .as_ref()
+            .map(ExpandedPath::as_path)
+            .ok_or_else(|| anyhow::anyhow!("no `environment` directory set in any config source"))
+    }
+
     /// Cross-reference checks: tiers refer to declared layers, credentials,
     /// and backends; default_tier and default_layers exist; project tiers
-    /// exist.
+    /// exist. Also requires `environment` to be set (post-merge invariant).
     pub fn validate(&self) -> Result<()> {
+        if self.environment.is_none() {
+            bail!("config must set `environment` (the environment image build context)");
+        }
+
         for (tier_name, tier) in &self.tiers {
             for layer in &tier.layers {
                 if !self.layers.contains_key(layer) {
@@ -483,6 +506,32 @@ tiers:
             .unwrap_err()
             .to_string();
         assert!(err.contains("undefined credential"), "{err}");
+    }
+
+    #[test]
+    fn validate_requires_environment() {
+        // A source may omit `environment` (per-source optional), but a config
+        // with no `environment` at all must fail validation.
+        let yaml = r#"
+layers:
+  c: /tmp/c
+tiers:
+  t:
+    layers: [c]
+"#;
+        let cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
+        assert!(cfg.environment.is_none());
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("environment"), "{err}");
+    }
+
+    #[test]
+    fn environment_dir_bails_when_unset() {
+        let yaml = r#"
+tiers: {}
+"#;
+        let cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
+        assert!(cfg.environment_dir().is_err());
     }
 
     #[test]
