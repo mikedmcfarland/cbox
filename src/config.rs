@@ -215,6 +215,35 @@ fn resolve(p: &mut PathBuf, base: &Path) {
     }
 }
 
+/// True when a `repo:` value should be treated as a filesystem path rather
+/// than a git URL. Path-shaped values start with `.`, `/`, or `~` (covering
+/// `.`, `..`, `./x`, `../x`, `/abs`, `~/home`); everything else (`git@…`,
+/// `https://…`, a bare `foo`) is a remote URL and is left verbatim.
+fn repo_is_path(s: &str) -> bool {
+    s.starts_with(['.', '/', '~'])
+}
+
+/// Resolve a path-shaped `repo:` against `base` (the cbox.yaml's parent
+/// dir), tilde-expanding first and collapsing `.`/`..` via `canonicalize`
+/// when the target exists. Non-path values pass through unchanged. Mirrors
+/// the layer/environment resolution so a project entry can point at a repo
+/// relative to its config file (`repo: ..` from `.cbox/cbox.yaml` is the
+/// enclosing repo) instead of hardcoding an absolute machine path.
+fn resolve_repo(repo: &mut String, base: &Path) {
+    if !repo_is_path(repo) {
+        return;
+    }
+    let mut p = PathBuf::from(shellexpand::tilde(repo.as_str()).into_owned());
+    if !p.is_absolute() {
+        p = base.join(p);
+    }
+    // Canonicalize to collapse `..`/`.` when the path exists; otherwise keep
+    // the lexically-joined path so resolution stays infallible. A missing
+    // repo then surfaces at clone time with git's own error.
+    let resolved = std::fs::canonicalize(&p).unwrap_or(p);
+    *repo = resolved.to_string_lossy().into_owned();
+}
+
 fn parse_mount(raw: &str) -> Result<MountSpec, String> {
     let mut parts = raw.splitn(3, ':');
     let host = parts
@@ -297,6 +326,9 @@ impl Config {
             if let Some(s) = &mut tier.settings {
                 resolve(&mut s.0, base);
             }
+        }
+        for proj in self.projects.values_mut() {
+            resolve_repo(&mut proj.repo, base);
         }
     }
 
@@ -532,6 +564,64 @@ tiers: {}
 "#;
         let cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
         assert!(cfg.environment_dir().is_err());
+    }
+
+    #[test]
+    fn resolve_repo_dotdot_resolves_to_enclosing_repo() {
+        // `.cbox/cbox.yaml` with `repo: ..` points at the dir containing
+        // `.cbox/` (the repo root) — the dogfood shape.
+        let tmp = tempfile::tempdir().unwrap();
+        let cbox_dir = tmp.path().join(".cbox");
+        std::fs::create_dir_all(&cbox_dir).unwrap();
+        let yaml = r#"
+environment: env
+tiers: {}
+projects:
+  cbox:
+    repo: ..
+"#;
+        let mut cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
+        cfg.resolve_relative_paths(&cbox_dir);
+        let expected = tmp.path().canonicalize().unwrap();
+        assert_eq!(cfg.projects["cbox"].repo, expected.to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_repo_dot_resolves_to_config_dir() {
+        // `repo: .` resolves to the cbox.yaml's own dir (parse base), per
+        // the uniform "relative to my config file" rule.
+        let tmp = tempfile::tempdir().unwrap();
+        let yaml = r#"
+environment: env
+tiers: {}
+projects:
+  here:
+    repo: .
+"#;
+        let mut cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
+        cfg.resolve_relative_paths(tmp.path());
+        let expected = tmp.path().canonicalize().unwrap();
+        assert_eq!(cfg.projects["here"].repo, expected.to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_repo_leaves_remote_urls_untouched() {
+        let yaml = r#"
+environment: /tmp/e
+tiers: {}
+projects:
+  ssh:
+    repo: git@github.com:org/app.git
+  https:
+    repo: https://github.com/org/app.git
+  bare:
+    repo: some-shorthand
+"#;
+        let mut cfg: Config = serde_yaml_bw::from_str(yaml).unwrap();
+        cfg.resolve_relative_paths(Path::new("/tmp/whatever"));
+        assert_eq!(cfg.projects["ssh"].repo, "git@github.com:org/app.git");
+        assert_eq!(cfg.projects["https"].repo, "https://github.com/org/app.git");
+        assert_eq!(cfg.projects["bare"].repo, "some-shorthand");
     }
 
     #[test]
