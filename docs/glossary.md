@@ -90,8 +90,8 @@ is fixed, environment is one-per-user, layers are many-per-tier.
 | Term | Definition |
 |---|---|
 | **base image** / **cbox-base** | Foundation Docker image cbox ships. Provides DinD, sshd, dtach, tmux, bubblewrap, supervisord, the `cbox` user. Users reference as `FROM cbox-base` in their environment but don't extend it directly. One per cbox version. |
-| **environment** | User's personal Dockerfile that builds on `cbox-base`. Holds dotfiles, shell, editor. Exactly one per cbox installation, shared across all tiers. Lives at `~/.config/cbox/environment/`. Distinct from generic English "dev environment." |
-| **layer** (cbox layer) | Named, composable, shareable Dockerfile fragment beginning with `ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}`. Multiple layers stack per tier in user-specified order. Declared in cbox.yaml's `layers:` map, referenced from `tiers.<name>.layers: [...]`. Distinct from a **Docker image layer** (filesystem delta produced by a Dockerfile instruction); when ambiguous, qualify as "cbox layer." See ADR 003. |
+| **environment** | Dockerfile that builds on `cbox-base`. Holds dotfiles, shell, editor. Exactly one per *merged* config — declared by either personal or project config; **personal wins** on conflict (ADR 015), with project's value as the first-time-user fallback. Most commonly lives at `~/.config/cbox/environment/`. Distinct from generic English "dev environment." |
+| **layer** (cbox layer) | Named, composable, shareable Dockerfile fragment beginning with `ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}`. Multiple layers stack per tier in user-specified order. Declared in cbox.yaml's `layers:` map, referenced from `tiers.<name>.layers: [...]`. **Personal wins** on name conflict during config merge so users can substitute project layers with their own (ADR 015). Distinct from a **Docker image layer** (filesystem delta produced by a Dockerfile instruction); when ambiguous, qualify as "cbox layer." See ADR 003. |
 
 ## Credentials
 
@@ -124,12 +124,27 @@ is fixed, environment is one-per-user, layers are many-per-tier.
 | **network mode** | `tier.network:` field in cbox.yaml. Values: `bridge` (Docker default; **Claude sandbox** can additionally allowlist within), `none` (no network at all). |
 | **privileged** | Docker `--privileged` flag. Required for DinD. Always set on tier instances on the Docker backend. |
 
+## Configuration
+
+cbox loads up to two config sources and merges them (ADR 015). Both
+sources use the same `cbox.yaml` schema; `validate()` runs only on the
+merged result.
+
+| Term | Definition |
+|---|---|
+| **personal config** | The user's global config: `$CBOX_CONFIG` if set, else `~/.config/cbox/cbox.yaml`. Carries personal preferences, credentials, and any layers/tiers not tied to a specific project. |
+| **project config** | A repo-checked-in `.cbox/cbox.yaml` discovered by walking up from `current_dir()`. Deepest match wins (single project source). Carries the project's layers, tiers, and project entries. |
+| **`.cbox/`** | Directory at any ancestor of CWD containing the **project config** plus optional sibling assets: `.cbox/layers/<name>/`, `.cbox/tiers/<tier>/settings.json`, etc. The directory name is the opt-in signal for project discovery. |
+| **config merge** | The combination of personal + project into a single Config. Project wins on *composition* fields (`tiers`, `projects`, `credentials`, `default_tier`); **personal wins on *content* fields** (`layers`, `environment`); `default_layers` is set-union with project entries first so personal layers stack on top. See ADR 015. |
+
 ## Project
 
 | Term | Definition |
 |---|---|
-| **project** | Named cbox.yaml shorthand mapping a project name to `(repo URL, default tier)`. Declared in `projects:`, referenced as the second positional argument to `cbox <name>` and `cbox run`. |
+| **project** | Named cbox.yaml shorthand mapping a project name to `(repo, default tier)`. Declared in `projects:`, referenced as the second positional argument to `cbox <name>` and `cbox run`. |
 | **project name** | Key in `projects:`. Used as a CLI argument. If the argument doesn't match a project name, cbox treats it as a filesystem path. |
+| **project repo** | The `projects.<name>.repo` field. Passed verbatim to `git clone` (URL or local path). Relative paths (`.`, `./foo`, `~/foo`) are resolved against the cbox.yaml's parent dir at parse time, so an in-repo project config can use `repo: .` to mean "this repo, here." See ADR 015. |
+| **cbox-dev tier** | The in-repo `cbox-dev` tier shipped in cbox's own `.cbox/cbox.yaml`. Composes the `rust` layer for Rust development. No credentials listed — Anthropic auth comes from the **claude state volume** via `cbox auth cbox-dev`. The canonical dogfood tier. |
 
 ## Verbs
 
