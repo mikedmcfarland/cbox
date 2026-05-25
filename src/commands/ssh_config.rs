@@ -24,8 +24,7 @@ use crate::keys::ensure_keypair;
 pub const CBOX_HOSTS_RELPATH: &str = ".ssh/cbox_hosts";
 
 pub async fn run() -> Result<()> {
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
     let keypair = tokio::task::spawn_blocking(ensure_keypair)
         .await
         .context("join ensure_keypair task")??;

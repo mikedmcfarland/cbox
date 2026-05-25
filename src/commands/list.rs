@@ -25,8 +25,7 @@ pub async fn run() -> Result<()> {
 /// Inner entrypoint: writes table output to `out` instead of stdout.
 /// Used by integration tests to capture and assert on output.
 pub(crate) async fn run_with(out: &mut impl Write) -> Result<()> {
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
 
     let backend = LocalDockerBackend::new()?;
 

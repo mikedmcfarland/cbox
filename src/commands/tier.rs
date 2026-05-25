@@ -103,8 +103,7 @@ async fn resume(tier: &str) -> Result<()> {
 }
 
 async fn load_config_and_validate_tier(tier: &str) -> Result<Config> {
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
     if !cfg.tiers.contains_key(tier) {
         anyhow::bail!("tier {tier:?} is not defined in cbox.yaml");
     }

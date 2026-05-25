@@ -79,8 +79,7 @@ async fn prepare(
     claude_flag: bool,
     attach_flag: bool,
 ) -> Result<Prep> {
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
 
     // resolve_project / prepare_session_workspace do filesystem + git
     // subprocess work; ensure_keypair runs ssh-keygen. All must be

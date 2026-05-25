@@ -25,8 +25,7 @@ pub async fn run(name: String, cmd: Vec<String>) -> Result<()> {
         // login shell.
         bail!("no command given to `cbox exec`");
     }
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
 
     let keypair = tokio::task::spawn_blocking(ensure_keypair)
         .await

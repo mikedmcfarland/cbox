@@ -19,8 +19,7 @@ use crate::session::list_active;
 use crate::ssh::SshConn;
 
 pub async fn run() -> Result<()> {
-    let cfg_path = Config::default_path()?;
-    let cfg = Config::load_async(cfg_path).await?;
+    let cfg = Config::load_async().await?;
 
     let backend = LocalDockerBackend::new()?;
 
