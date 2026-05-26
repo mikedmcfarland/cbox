@@ -88,7 +88,7 @@ can express:
 ```yaml
 projects:
   cbox:
-    repo: .          # resolved to the repo root, on any machine
+    repo: ..         # the dir containing this `.cbox/` — the repo root
     tier: cbox-dev
 ```
 
@@ -96,6 +96,11 @@ Detection: a `repo:` string starting with `.`, `..`, `~`, or `/` is
 treated as a path (tilde-expanded, then canonicalized against the
 config file's parent). Anything else (`git@…`, `https://…`,
 `ssh://…`, bare `foo`) is left verbatim — `git clone` handles those.
+
+Resolution is uniform with `layers.*`/`environment`: relative to the
+**cbox.yaml's own parent dir**. Since this file lives in `.cbox/`,
+`repo: ..` resolves to the enclosing repo root (`repo: .` would point
+at `.cbox/` itself, which is not a git repo).
 
 After parse-time resolution, every `repo:` is either an absolute
 filesystem path or a non-path URL string. `workspace.rs` needs no

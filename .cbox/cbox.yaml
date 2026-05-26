@@ -1,0 +1,33 @@
+# cbox project config for developing cbox itself (ADR 015).
+#
+# Self-sufficient: references the canonical example's environment and
+# claude layer so `cbox build cbox-dev` works with no personal config.
+# A personal config can shadow `layers.claude` / `environment` to
+# customize — personal wins on content (ADR 015 merge rules).
+#
+# Paths are resolved relative to this file's dir (`.cbox/`); `repo: ..`
+# is therefore the enclosing repo root, which is what `git clone` wants.
+environment: ../examples/full-setup/environment
+
+default_layers: [claude]
+default_tier: cbox-dev
+
+layers:
+  claude: ../examples/full-setup/layers/claude
+  rust:   layers/rust
+
+projects:
+  cbox:
+    repo: ..
+    tier: cbox-dev
+
+# No `credentials:` block. Anthropic auth = OAuth on the .claude volume
+# (ADR 014): run `cbox auth cbox-dev` once and the token persists across
+# image rebuilds. Add credentials here later for MCP tokens or dotfiles.
+
+tiers:
+  cbox-dev:
+    layers: [rust]
+    network: bridge
+    credentials: []
+    settings: tiers/cbox-dev/settings.json

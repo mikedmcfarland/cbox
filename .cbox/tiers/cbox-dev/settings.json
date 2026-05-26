@@ -1,0 +1,30 @@
+{
+  "sandbox": {
+    "network": {
+      "allowedDomains": [
+        "api.anthropic.com",
+        "crates.io",
+        "static.crates.io",
+        "*.rust-lang.org",
+        "github.com",
+        "*.githubusercontent.com"
+      ]
+    },
+    "allowUnsandboxedCommands": false
+  },
+  "permissions": {
+    "allow": [
+      "Read", "Edit", "Write", "Glob", "Grep",
+      "Bash(cargo *)",
+      "Bash(rustup *)",
+      "Bash(just *)",
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(rg *)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(gh auth *)"
+    ]
+  }
+}
