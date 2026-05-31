@@ -102,6 +102,8 @@ is fixed, environment is one-per-user, layers are many-per-tier.
 | **mount credential** | Credential shape: bind-mounts a host path into the tier instance. Field: `mount`. |
 | **credential reference** | Entry in `tier.credentials: [...]` that pulls a declared credential into a specific tier. Tiers reference; they don't redefine. |
 | **credential source** | Host-side origin of an env credential's value: a 1Password reference (`op://...`), a host env var, or a literal. The `source:` field. Mount credentials don't have a source — the path *is* the source. |
+| **api-key auth** | Tier's `auth: api-key` setting. cbox resolves an env-shaped credential whose `env_var` is `ANTHROPIC_API_KEY` on the host and injects it into the tier instance at container start; nothing Anthropic-related lands on the **claude state volume**. The default and only path pre-ADR 018; recommended for headless / CI tiers. See ADR 018. |
+| **oauth auth** | Tier's `auth: oauth` setting. Claude Code uses its native `~/.claude/.credentials.json` on the **claude state volume**; the user runs `cbox auth <tier>` once to land a subscription-billed OAuth token that persists across image rebuilds. Recommended for interactive tiers. cbox suppresses any tier-listed `ANTHROPIC_API_KEY` env credential in this mode. See ADR 018. |
 
 ## MCP
 

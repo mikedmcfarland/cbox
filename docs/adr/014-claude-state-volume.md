@@ -10,7 +10,8 @@ Claude Code on Linux accumulates state under `/home/cbox/.claude/`:
 - `.claude.json` (preferences, feature flags, registered MCP servers,
   onboarding state, OAuth-MCP tokens).
 - `.credentials.json` (Anthropic OAuth token, when used — we currently
-  bypass this with `ANTHROPIC_API_KEY`).
+  bypass this with `ANTHROPIC_API_KEY`; ADR 018 makes OAuth a
+  first-class per-tier opt-in alongside the api-key path).
 - Various MCP-server-specific files.
 
 If this directory lives only on the container's writable layer:
@@ -116,3 +117,7 @@ verb), revisit.
 - ADR 012 (credentials / trust boundary — `.claude` is part of the
   per-tier trust boundary).
 - ADR 013 (init.d delivery — script effects persist here).
+- ADR 018 (dual Anthropic auth — `.credentials.json` becomes the
+  storage location for OAuth-mode tiers; the volume's persistence
+  guarantees apply to the Anthropic token the same way they apply to
+  MCP state).
