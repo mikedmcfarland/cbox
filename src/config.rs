@@ -219,7 +219,7 @@ fn resolve(p: &mut PathBuf, base: &Path) {
 /// than a git URL. Path-shaped values start with `.`, `/`, or `~` (covering
 /// `.`, `..`, `./x`, `../x`, `/abs`, `~/home`); everything else (`git@…`,
 /// `https://…`, a bare `foo`) is a remote URL and is left verbatim.
-fn repo_is_path(s: &str) -> bool {
+pub(crate) fn repo_is_path(s: &str) -> bool {
     s.starts_with(['.', '/', '~'])
 }
 
