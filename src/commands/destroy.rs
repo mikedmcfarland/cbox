@@ -39,6 +39,7 @@ pub async fn run(name: String, workspace: bool) -> Result<()> {
         let ssh = SshConn {
             endpoint,
             identity_file: keypair.private_key_path.clone(),
+            forward_ports: Vec::new(),
         };
         if !is_alive(&ssh, &name).await? {
             continue;

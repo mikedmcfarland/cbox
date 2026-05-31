@@ -17,6 +17,14 @@ use crate::backend::TierEndpoint;
 pub struct SshConn {
     pub endpoint: TierEndpoint,
     pub identity_file: PathBuf,
+    /// Loopback ports to forward host→container for the lifetime of
+    /// the ssh process. Rendered as `-L 127.0.0.1:N:127.0.0.1:N` —
+    /// loopback on both ends, per ADR 019.
+    ///
+    /// Used by `cbox auth` so OAuth providers' `localhost:N/callback`
+    /// redirects from a host browser land on Claude Code's in-container
+    /// listener. Empty for regular sessions.
+    pub forward_ports: Vec<u16>,
 }
 
 impl SshConn {
@@ -38,6 +46,13 @@ impl SshConn {
             "-o".to_string(),
             "IdentitiesOnly=yes".to_string(),
         ];
+        // Port forwards, before -o passthroughs so any user-supplied
+        // `-o ExitOnForwardFailure=...` still wins. Loopback-bound on
+        // both ends: never `*:N` or `0.0.0.0:N` (ADR 019).
+        for port in &self.forward_ports {
+            out.push("-L".to_string());
+            out.push(format!("127.0.0.1:{port}:127.0.0.1:{port}"));
+        }
         for (k, v) in &self.endpoint.ssh_options {
             out.push("-o".to_string());
             out.push(format!("{k}={v}"));
@@ -134,6 +149,7 @@ mod tests {
         let conn = SshConn {
             endpoint: fake_endpoint(),
             identity_file: PathBuf::from("/home/me/.cbox/keys/id_ed25519"),
+            forward_ports: Vec::new(),
         };
         let args = conn.args();
         assert!(args.contains(&"-p".into()));
@@ -151,10 +167,80 @@ mod tests {
         let conn = SshConn {
             endpoint: ep,
             identity_file: PathBuf::from("/k"),
+            forward_ports: Vec::new(),
         };
         let args = conn.args();
         let pos = args.iter().position(|a| a == "ProxyCommand=foo bar");
         assert!(pos.is_some(), "expected ProxyCommand option");
+    }
+
+    #[test]
+    fn args_render_loopback_forwards_when_requested() {
+        let conn = SshConn {
+            endpoint: fake_endpoint(),
+            identity_file: PathBuf::from("/k"),
+            forward_ports: vec![54545],
+        };
+        let args = conn.args();
+        // Find -L flag and confirm the forward spec is loopback on both sides.
+        let mut iter = args.iter();
+        let mut found = false;
+        while let Some(a) = iter.next() {
+            if a == "-L" {
+                let spec = iter.next().expect("-L must be followed by spec");
+                assert_eq!(spec, "127.0.0.1:54545:127.0.0.1:54545");
+                found = true;
+            }
+        }
+        assert!(found, "expected -L 127.0.0.1:54545:... in: {args:?}");
+    }
+
+    #[test]
+    fn args_omit_l_flag_when_no_forwards_configured() {
+        let conn = SshConn {
+            endpoint: fake_endpoint(),
+            identity_file: PathBuf::from("/k"),
+            forward_ports: Vec::new(),
+        };
+        let args = conn.args();
+        assert!(
+            !args.iter().any(|a| a == "-L"),
+            "no forwards configured should not emit -L: {args:?}"
+        );
+    }
+
+    #[test]
+    fn args_render_multiple_forwards_as_separate_l_flags() {
+        let conn = SshConn {
+            endpoint: fake_endpoint(),
+            identity_file: PathBuf::from("/k"),
+            forward_ports: vec![54545, 7777],
+        };
+        let args = conn.args();
+        let count = args.iter().filter(|a| *a == "-L").count();
+        assert_eq!(count, 2, "expected one -L per port: {args:?}");
+        // Both specs present.
+        assert!(args.iter().any(|a| a == "127.0.0.1:54545:127.0.0.1:54545"));
+        assert!(args.iter().any(|a| a == "127.0.0.1:7777:127.0.0.1:7777"));
+    }
+
+    #[test]
+    fn args_never_bind_forwards_to_non_loopback() {
+        // Regression guard for ADR 019: the host-side bind must always be
+        // loopback. A future refactor must not let `0.0.0.0:N:...` or
+        // `*:N:...` slip through.
+        let conn = SshConn {
+            endpoint: fake_endpoint(),
+            identity_file: PathBuf::from("/k"),
+            forward_ports: vec![54545],
+        };
+        let args = conn.args();
+        for a in &args {
+            assert!(
+                !a.starts_with("0.0.0.0:") && !a.starts_with("*:"),
+                "forward spec must be loopback-bound, found {a:?} in {args:?}"
+            );
+        }
     }
 
     #[test]
@@ -177,6 +263,7 @@ mod tests {
         let conn = SshConn {
             endpoint: fake_endpoint(),
             identity_file: PathBuf::from("/k"),
+            forward_ports: Vec::new(),
         };
         let line = conn.quoted_command_line(&["echo", "hi there"]);
         assert!(line.starts_with("ssh "));

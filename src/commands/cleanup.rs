@@ -49,6 +49,7 @@ pub async fn run() -> Result<()> {
         let ssh = SshConn {
             endpoint,
             identity_file: kp.private_key_path.clone(),
+            forward_ports: Vec::new(),
         };
         let sessions = list_active(&ssh)
             .await

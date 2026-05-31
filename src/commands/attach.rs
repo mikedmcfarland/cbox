@@ -126,6 +126,7 @@ async fn prepare(
     let ssh = SshConn {
         endpoint,
         identity_file: keypair.private_key_path.clone(),
+        forward_ports: Vec::new(),
     };
 
     let alive = is_alive(&ssh, name).await?;

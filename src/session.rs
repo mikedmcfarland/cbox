@@ -282,6 +282,7 @@ mod tests {
         let ssh = SshConn {
             endpoint,
             identity_file: kp.private_key_path.clone(),
+            forward_ports: Vec::new(),
         };
 
         // sshd starts in parallel with dockerd via supervisord; poll until
