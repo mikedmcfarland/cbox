@@ -17,7 +17,7 @@ USER cbox
 # stable, and there is no rust-toolchain.toml to honour yet.
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable --profile minimal \
-        --component rustfmt clippy
+        --component rustfmt,clippy
 
 # Put cargo/rustc/clippy/rustfmt on PATH for every shell — login or not —
 # so the agent's `cargo …` / `just …` commands resolve. rustup also
