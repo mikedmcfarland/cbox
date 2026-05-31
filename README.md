@@ -143,9 +143,11 @@ keybindings, same copy mode, same everything. `dtach` provides inner
 persistence (survives SSH drops) with no keybinding footprint. Autonomous
 sessions (`cbox run`) use container tmux internally; inspect with
 `ssh <tier> tmux -S /run/cbox/<name>.sock attach`. Clipboard works via
-OSC 52 over SSH (host tmux needs `set -g allow-passthrough on`). Configure
-the cbox window's `default-command` if you want pane splits to auto-SSH
-into the tier instance.
+OSC 52 over SSH — host tmux needs `set -g allow-passthrough on` and your
+terminal emulator needs OSC 52 enabled; see
+[docs/clipboard.md](docs/clipboard.md) for the per-terminal checklist.
+Configure the cbox window's `default-command` if you want pane splits to
+auto-SSH into the tier instance.
 
 ## Dotfiles integration
 
@@ -195,6 +197,7 @@ the backend abstraction.
 
 - **[Glossary](docs/glossary.md)** — canonical vocabulary
 - **[Configuration](docs/configuration.md)** — full configuration reference
+- **[Clipboard over SSH](docs/clipboard.md)** — OSC 52 setup checklist
 - **[Plans](docs/plans/)** — design spec and rationale
 - **[ADRs](docs/adr/)** — architectural decisions
 - **[Examples](examples/)** — copy-able starter configs
