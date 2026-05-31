@@ -26,7 +26,11 @@ async fn main() -> Result<()> {
             prompt,
         }) => commands::run::run(name, project, prompt, cli.tier).await,
         Some(Command::Exec { name, cmd }) => commands::exec::run(name, cmd).await,
-        Some(Command::Auth { tier }) => commands::auth::run(tier).await,
+        Some(Command::Auth {
+            tier,
+            forward_port,
+            no_forward_port,
+        }) => commands::auth::run(tier, forward_port, no_forward_port).await,
         Some(Command::List) => commands::list::run().await,
         Some(Command::Destroy { name, workspace }) => commands::destroy::run(name, workspace).await,
         Some(Command::Build { tier, no_cache }) => commands::build::run(tier, no_cache).await,
