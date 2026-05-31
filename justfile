@@ -39,3 +39,9 @@ build:
 
 run *ARGS:
     cargo run -- {{ARGS}}
+
+# Apply repo settings + branch rulesets from .github/ to GitHub.
+# Idempotent; safe to re-run. Requires gh CLI with repo admin scope.
+gh-apply:
+    scripts/apply-repo-settings.sh
+    scripts/apply-rulesets.sh
