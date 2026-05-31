@@ -197,6 +197,7 @@ dependencies = [
  "futures-util",
  "predicates",
  "serde",
+ "serde_json",
  "serde_yaml_bw",
  "serial_test",
  "shellexpand",
