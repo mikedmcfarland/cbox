@@ -62,6 +62,7 @@ predicate over a running instance, not a state.
 | **session workspace** | Session's working directory at `/workspace/<name>/` inside the tier instance. cbox owns the checkout (clone for the first session in a repo, worktree for subsequent sessions in the same tier — see ADR 009). Persists by default after session destroy. Local backend: also accessible on the host at `~/.cbox/workspaces/<name>/` for editor access. Remote backends: access via Remote-SSH, SSHFS, or rsync-on-demand — no host-side path. |
 | **session window** | Host tmux window for an interactive session, named `cbox:<name>`. Autonomous sessions have no window. |
 | **session kind** | `interactive` or `autonomous`. Surfaced in `cbox list` output. |
+| **OSC 52** | Terminal escape sequence (`ESC ] 52 ; c ; <base64> BEL`) that writes the decoded payload to the OS clipboard. cbox relies on it for container-to-host clipboard. The path is shell → sshd → host tmux → terminal emulator; tmux passthrough and per-emulator opt-ins are the usual blockers. See [docs/clipboard.md](clipboard.md). |
 
 ### Session lifecycle
 
