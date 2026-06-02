@@ -57,10 +57,9 @@ predicate over a running instance, not a state.
 
 | Term | Definition |
 |---|---|
-| **session** | Logical unit of work, identified by `<name>`, scoped to one tier. Has exactly one socket and one workspace; has a window only if interactive. Stateless tracking (ADR 010): the socket *is* the session's existence. |
+| **session** | Logical unit of work, identified by `<name>`, scoped to one tier. Has exactly one socket and one workspace. Stateless tracking (ADR 010): the socket *is* the session's existence. |
 | **session socket** | dtach socket at `/run/cbox/<name>.sock` inside the tier instance, used by both interactive (`dtach -A -z`) and autonomous (`dtach -n`) sessions. Presence determines aliveness. |
 | **session workspace** | Session's working directory at `/workspace/<name>/` inside the tier instance. cbox owns the checkout (clone for the first session in a repo, worktree for subsequent sessions in the same tier — see ADR 009). Persists by default after session destroy. Local backend: also accessible on the host at `~/.cbox/workspaces/<name>/` for editor access. Remote backends: access via Remote-SSH, SSHFS, or rsync-on-demand — no host-side path. |
-| **session window** | Host tmux window for an interactive session, named `cbox:<name>`. Autonomous sessions have no window. |
 | **session kind** | `interactive` or `autonomous`. Surfaced in `cbox list` output. |
 
 ### Session lifecycle
@@ -79,8 +78,8 @@ orthogonal. Connection applies to interactive sessions only.
 
 | Term | Definition |
 |---|---|
-| **interactive session** | Default kind. Uses dtach for inner persistence; appears as a host tmux window. User attaches/detaches freely. |
-| **autonomous session** | Created by `cbox run`. Uses dtach in detached mode (`dtach -n`) — same socket layout as an interactive session, no host tmux window. Spawns the tier's **agent** with the prompt as a positional argument; returns immediately. Inspectable via SSH and attachable via `cbox <name>`. See ADR 005. |
+| **interactive session** | Default kind. Uses dtach for inner persistence; runs inline in the invoking shell/pane (ADR 016). User attaches/detaches freely. |
+| **autonomous session** | Created by `cbox run`. Uses dtach in detached mode (`dtach -n`) — same socket layout as an interactive session. Spawns the tier's **agent** with the prompt as a positional argument; returns immediately. Inspectable via SSH and attachable via `cbox <name>`. See ADR 005. |
 
 ## Build inputs
 
@@ -157,7 +156,7 @@ operates on sessions.
 | **create-or-attach** | Action of `cbox <name>` (no verb). First invocation creates a new alive session; subsequent invocations open an additional shell into the existing session. Describes the call's outcome, not the session lifecycle. |
 | **run** | `cbox run <name> [project-or-path] "<prompt>"`. Creates an autonomous session and detaches. |
 | **exec** | `cbox exec <name> <cmd>`. Runs a one-off command in an existing alive session's workspace. Doesn't create or destroy. |
-| **destroy** | `cbox destroy <name>`. Destroys the session: removes **session socket** and **session window**. **Session workspace** persists by default. The colloquial "kill" is not cbox vocabulary. |
+| **destroy** | `cbox destroy <name>`. Destroys the session: removes the **session socket**. **Session workspace** persists by default. The colloquial "kill" is not cbox vocabulary. |
 | **build** | `cbox build [tier]`. Builds the tier image (the build chain). |
 | **auth** | `cbox auth <tier>`. One-time interactive **OAuth MCP registration** for a tier. Scoped to OAuth MCPs only. |
 | **list** | `cbox list`. Enumerates sessions and tier instances. |

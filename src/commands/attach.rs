@@ -1,13 +1,18 @@
 //! `cbox <name> [project]` — create or attach to an interactive session.
 //!
-//! See `docs/plans/v1.md` §Session lifecycle. Idempotent: on first
-//! invocation it creates the workspace, the dtach socket, and a host
-//! tmux window; on subsequent invocations it opens an ancillary shell
-//! into the same workspace, or — with `--attach` — re-focuses the
-//! existing dtach window.
+//! See `docs/plans/v1.md` §Session lifecycle and ADR 016. Idempotent: on
+//! first invocation it creates the workspace and the dtach socket;
+//! subsequent invocations attach to that socket (with `--attach`) or open
+//! an ancillary shell into the same workspace.
+//!
+//! The ssh+dtach call always runs **inline** in the current shell / tmux
+//! pane. The visual indicator is an OSC 0 terminal-title escape
+//! (`\e]0;cbox:<session>\a`) emitted before the inner command runs — it
+//! travels with the session regardless of which pane it lands in. Users
+//! who want a dedicated tmux window can open one themselves before
+//! invoking cbox.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 
@@ -19,7 +24,6 @@ use crate::credentials::OnePasswordResolver;
 use crate::keys::ensure_keypair;
 use crate::session::{LaunchCommand, dtach_command, is_alive, shell_in_workspace_command};
 use crate::ssh::{SshConn, shell_quote};
-use crate::tmux;
 use crate::workspace::{container_session_path, prepare_session_workspace, resolve_project};
 
 pub async fn run(
@@ -179,34 +183,29 @@ async fn apply_action(
         }
         Action::StartShell => spawn_primary(ssh, name, workspace, &LaunchCommand::Shell).await,
         Action::SelectExisting => {
-            let primary = tmux::window_name(name, None);
-            if tmux::inside_tmux() && tmux::select_window(&primary).await? {
-                Ok(())
-            } else {
-                // Outside tmux, or window was killed but socket persists —
-                // reattach inline via ssh.
-                attach_inline(
-                    ssh,
-                    name,
-                    workspace,
-                    &LaunchCommand::Agent(agent_command.to_string()),
-                )
-                .await
-            }
+            // `--attach` re-enters the existing dtach session inline in
+            // the current pane.
+            attach_inline(
+                ssh,
+                name,
+                workspace,
+                &LaunchCommand::Agent(agent_command.to_string()),
+            )
+            .await
         }
         Action::OpenAncillaryShell => {
             let inner = shell_in_workspace_command(workspace);
-            spawn_ancillary(ssh, name, &inner, "shell").await
+            spawn_ancillary(ssh, name, &inner).await
         }
         Action::OpenAncillaryClaude => {
-            // Ancillary agent is a fresh process — closing the window
-            // ends it, leaving the primary session untouched.
+            // Ancillary agent is a fresh process — closing the pane ends
+            // it, leaving the primary session untouched.
             let inner = format!(
                 "cd {ws} && exec {agent}",
                 ws = shell_quote(&workspace.display().to_string()),
                 agent = agent_command,
             );
-            spawn_ancillary(ssh, name, &inner, "agent").await
+            spawn_ancillary(ssh, name, &inner).await
         }
     }
 }
@@ -217,32 +216,15 @@ async fn spawn_primary(
     workspace: &Path,
     launch: &LaunchCommand,
 ) -> Result<()> {
-    let inner = dtach_command(workspace, name, launch);
+    let inner = with_title(name, &dtach_command(workspace, name, launch));
     let remote = wrap_login_shell(&inner);
-    if tmux::inside_tmux() {
-        let line = ssh.quoted_command_line(&["-t", "--", &remote]);
-        tmux::create_window(&tmux::window_name(name, None), &line).await
-    } else {
-        eprintln!(
-            "==> not inside tmux; running ssh inline. Run cbox from a host \
-             tmux to keep the session detachable across SSH drops."
-        );
-        run_inline(ssh, &["-t", "--", &remote]).await
-    }
+    run_inline(ssh, &["-t", "--", &remote]).await
 }
 
-async fn spawn_ancillary(ssh: &SshConn, name: &str, inner: &str, kind: &str) -> Result<()> {
-    let remote = wrap_login_shell(inner);
-    if tmux::inside_tmux() {
-        let line = ssh.quoted_command_line(&["-t", "--", &remote]);
-        tmux::create_window(
-            &tmux::window_name(name, Some(&ancillary_suffix(kind))),
-            &line,
-        )
-        .await
-    } else {
-        run_inline(ssh, &["-t", "--", &remote]).await
-    }
+async fn spawn_ancillary(ssh: &SshConn, name: &str, inner: &str) -> Result<()> {
+    let titled = with_title(name, inner);
+    let remote = wrap_login_shell(&titled);
+    run_inline(ssh, &["-t", "--", &remote]).await
 }
 
 async fn attach_inline(
@@ -251,7 +233,7 @@ async fn attach_inline(
     workspace: &Path,
     launch: &LaunchCommand,
 ) -> Result<()> {
-    let inner = dtach_command(workspace, name, launch);
+    let inner = with_title(name, &dtach_command(workspace, name, launch));
     let remote = wrap_login_shell(&inner);
     run_inline(ssh, &["-t", "--", &remote]).await
 }
@@ -274,9 +256,25 @@ fn wrap_login_shell(inner: &str) -> String {
     format!("bash -lc {}", crate::ssh::shell_quote(inner))
 }
 
+/// Prefix `inner` with an OSC 0 escape that sets the terminal title to
+/// `cbox:<session>`. This is the visual indicator — it replaces the
+/// ADR 005 "different tmux window name + status color" idea now that
+/// cbox runs inline in whatever pane invoked it (ADR 016). The title
+/// travels with the session regardless of which pane it lands in.
+///
+/// The escape is emitted via `printf` before `exec` so it survives even
+/// when the inner command (`dtach -A`, agent) takes over stdin/stdout.
+/// Terminals and tmux strip the escape from output once consumed.
+fn with_title(session: &str, inner: &str) -> String {
+    format!(
+        "printf {esc}; {inner}",
+        esc = crate::ssh::shell_quote(&format!("\x1b]0;cbox:{session}\x07")),
+    )
+}
+
 /// Resolve the interactive agent command for this tier. Appends
 /// `--dangerously-skip-permissions` when the tier opts in so every agent
-/// process the user starts (primary dtach, ancillary `--claude` window)
+/// process the user starts (primary dtach, ancillary `--claude`)
 /// inherits the setting.
 fn interactive_agent_command(tier_cfg: &crate::config::TierConfig) -> String {
     if tier_cfg.dangerously_skip_permissions {
@@ -284,14 +282,6 @@ fn interactive_agent_command(tier_cfg: &crate::config::TierConfig) -> String {
     } else {
         tier_cfg.agent.command.clone()
     }
-}
-
-fn ancillary_suffix(kind: &str) -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{kind}-{secs}")
 }
 
 #[cfg(test)]
@@ -326,6 +316,27 @@ mod tests {
             decide_action(true, false, true, true),
             Action::SelectExisting
         );
+    }
+
+    #[test]
+    fn with_title_emits_osc_0_before_inner() {
+        let out = with_title(
+            "auth-fix",
+            "exec dtach -A /run/cbox/auth-fix.sock -z claude",
+        );
+        // OSC 0 sequence: ESC ] 0 ; cbox:auth-fix BEL
+        assert!(
+            out.contains("\x1b]0;cbox:auth-fix\x07"),
+            "title escape missing: {out}"
+        );
+        // Inner command preserved verbatim after the printf.
+        assert!(
+            out.ends_with("; exec dtach -A /run/cbox/auth-fix.sock -z claude"),
+            "inner not appended: {out}"
+        );
+        // printf arg must be single-quoted so the shell hands the escape
+        // through to printf without interpreting it.
+        assert!(out.starts_with("printf '"), "printf not quoted: {out}");
     }
 
     #[test]

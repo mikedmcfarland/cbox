@@ -1,11 +1,11 @@
 # cbox
 
 Run Claude Code sessions in isolated containers with configured credentials
-and permissions — then work with them as panes and windows in your normal
-tmux session. Same keybindings, same workflow, different status bar color.
-Each tier is a Docker container with its own network, tokens, and tool
-restrictions. You get hands-off autonomous runs without risking your host,
-and interactive sessions that feel like home.
+and permissions — then work with them as panes in your normal terminal or
+tmux session. Same keybindings, same workflow. Each tier is a Docker
+container with its own network, tokens, and tool restrictions. You get
+hands-off autonomous runs without risking your host, and interactive
+sessions that feel like home.
 
 ## Prerequisites
 
@@ -39,8 +39,9 @@ Or build and copy the binary:
     cd ~/projects/my-app
     cbox my-fix
 
-    # You're in a host tmux window running Claude inside the tier instance.
-    # ctrl-b d to detach (dtach keeps Claude alive). Reconnect anytime.
+    # Claude runs inside the tier instance, inline in your current pane.
+    # ctrl-\ to detach from dtach (Claude keeps running). Reconnect anytime
+    # with the same `cbox my-fix --attach`.
 
     # Open a shell in the same workspace (session already exists):
     cbox my-fix
@@ -56,13 +57,15 @@ Or build and copy the binary:
 
 Each tier runs as a long-running **tier instance** — a Docker container on
 the local backend. Interactive sessions use `dtach` for inner persistence
-and appear as host tmux windows. Autonomous sessions use container tmux
+and run inline in whatever pane you invoked cbox from (ADR 016) — wrap
+with `tmux new-window` / `tmux split-window` yourself if you want a
+dedicated window or split. Autonomous sessions use container tmux
 (headless).
 
-    Host tmux
-    ├── Window 1 (tm: project): local shells
-    ├── Window 2 (cbox: auth-fix): SSH → dtach → /workspace/auth-fix
-    ├── Window 3 (cbox: experiment): SSH → dtach → /workspace/experiment
+    Host shell / tmux (your composition — splits, windows, sessions)
+    ├── Pane A: cbox auth-fix       → SSH → dtach → /workspace/auth-fix
+    ├── Pane B: cbox experiment     → SSH → dtach → /workspace/experiment
+    ├── Pane C: cbox auth-fix       → ancillary shell in same workspace
     │
     │   cbox-dev container
     │   ├── dtach: auth-fix.sock     → /workspace/auth-fix
@@ -136,7 +139,7 @@ setup you can copy, see [examples/full-setup/](examples/full-setup/).
 
 | Command | Description |
 |---------|-------------|
-| `cbox <name> [project]` | Create or attach. New: Claude in dtach + host tmux window. Existing: shell in same workspace. `--shell`/`--claude`/`--attach` to override. |
+| `cbox <name> [project]` | Create or attach. New: Claude in dtach, inline in the current pane. Existing: shell in same workspace, inline. `--shell`/`--claude`/`--attach` to override. |
 | `cbox run <name> [project] <prompt>` | Autonomous session (container tmux, headless), detach. |
 | `cbox exec <name> <cmd>` | One-off command in the session's workspace. |
 | `cbox auth <tier>` | Set up OAuth MCPs (one-time). |
@@ -155,14 +158,14 @@ Tier instances auto-start and auto-pause (see
 
 ## Host tmux integration
 
-Interactive sessions live inside host tmux as panes and windows — same
-keybindings, same copy mode, same everything. `dtach` provides inner
-persistence (survives SSH drops) with no keybinding footprint. Autonomous
-sessions (`cbox run`) use container tmux internally; inspect with
-`ssh <tier> tmux -S /run/cbox/<name>.sock attach`. Clipboard works via
-OSC 52 over SSH (host tmux needs `set -g allow-passthrough on`). Configure
-the cbox window's `default-command` if you want pane splits to auto-SSH
-into the tier instance.
+Interactive sessions run inline in whatever pane you invoke cbox from
+(ADR 016) — same keybindings, same copy mode, same everything. `dtach`
+provides inner persistence (survives SSH drops) with no keybinding
+footprint. Want a dedicated window? `tmux new-window cbox <name>`. Want a
+split? `tmux split-window cbox <name>`. cbox stays out of host tmux's way.
+Autonomous sessions (`cbox run`) use container tmux internally; inspect
+with `ssh <tier> tmux -S /run/cbox/<name>.sock attach`. Clipboard works
+via OSC 52 over SSH (host tmux needs `set -g allow-passthrough on`).
 
 ## Dotfiles integration
 

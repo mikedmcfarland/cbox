@@ -76,7 +76,7 @@ pub struct TierRunConfig {
 - **Session management**: always SSH + dtach/tmux, using the `TierEndpoint` returned by the backend. The `session.rs` module is backend-agnostic.
 - **Credential resolution**: always runs on the host (`op read`, env vars). Resolved values are passed to the backend in `TierRunConfig.env`.
 - **Workspace access**: how you edit files in a session (local mount, VS Code Remote-SSH, SSHFS) is orthogonal to where the compute runs. Handled separately, potentially differently per backend.
-- **Host tmux integration**: creates windows with an SSH command derived from `TierEndpoint`. Backend-agnostic.
+- **Host tmux integration**: interactive sessions run inline in the invoking pane (ADR 016); `cbox auth <tier>` opens a one-shot host tmux window for the OAuth handoff when invoked inside tmux. Both paths use SSH commands derived from `TierEndpoint`. Backend-agnostic.
 - **Docker/compose availability inside the session**: an implicit postcondition of `ensure_running`, not an explicit capability. How it's achieved (DinD with `--privileged`, Docker-outside-of-Docker, VM-native Docker) is a backend implementation detail.
 
 ### Per-tier long-lived model
