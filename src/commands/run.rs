@@ -1,8 +1,9 @@
 //! `cbox run <name> [project] <prompt>` — autonomous (headless) Claude.
 //!
 //! Same bring-up as the interactive path (ensure tier running, prepare
-//! workspace, ensure keypair), but instead of opening a host-tmux window
-//! we ssh in and spawn `dtach -n <sock> claude -p '<prompt>'`. The `-n`
+//! workspace, ensure keypair), but instead of running an inline ssh
+//! that the user drives, we ssh in and spawn
+//! `dtach -n <sock> claude -p '<prompt>'`. The `-n`
 //! flag detaches immediately: ssh returns, the user gets their terminal
 //! back, and `claude -p` continues in the pty buffer. A subsequent
 //! `cbox <name>` attaches to that same socket.

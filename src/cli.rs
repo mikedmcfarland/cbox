@@ -72,7 +72,7 @@ pub enum Command {
     /// List all sessions and tier instances.
     List,
 
-    /// Destroy a session (socket + host tmux window). Workspace persists by default.
+    /// Destroy a session (socket). Workspace persists by default.
     Destroy {
         /// Session name.
         name: String,

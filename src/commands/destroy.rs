@@ -1,9 +1,9 @@
 //! `cbox destroy <name>` — kill a session.
 //!
-//! Removes the dtach socket inside its tier instance, kills the host
-//! tmux windows associated with the session, and (optionally) deletes
-//! the on-host workspace. If the destroy leaves a tier with no live
-//! sessions, the tier instance auto-pauses (plan §Container lifecycle).
+//! Removes the dtach socket inside its tier instance and (optionally)
+//! deletes the on-host workspace. If the destroy leaves a tier with no
+//! live sessions, the tier instance auto-pauses (plan §Container
+//! lifecycle).
 
 use anyhow::{Context, Result};
 
@@ -14,7 +14,6 @@ use crate::config::Config;
 use crate::keys::ensure_keypair;
 use crate::session::{destroy as destroy_session, is_alive, list_active};
 use crate::ssh::SshConn;
-use crate::tmux;
 use crate::workspace::{session_dir, tier_workspace_dir};
 
 pub async fn run(name: String, workspace: bool) -> Result<()> {
@@ -57,10 +56,6 @@ pub async fn run(name: String, workspace: bool) -> Result<()> {
         }
         break;
     }
-
-    // Wipe host tmux windows regardless — user may have killed the
-    // remote socket manually and just wants the windows cleaned up.
-    tmux::kill_session_windows(&name).await?;
 
     if workspace {
         remove_workspace_for(&cfg, &name).await?;
