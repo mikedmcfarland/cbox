@@ -261,7 +261,7 @@ mod tests {
         let _home = HomeGuard(prev_home);
 
         // Idempotent teardown of any prior container.
-        let _ = backend.destroy(tier).await;
+        let _ = backend.remove_instance(tier).await;
 
         let kp = tokio::task::spawn_blocking(ensure_keypair)
             .await
@@ -369,7 +369,7 @@ mod tests {
         .await;
 
         // Always tear down the tier, then propagate the outcome.
-        let teardown = backend.destroy(tier).await;
+        let teardown = backend.remove_instance(tier).await;
         outcome.expect("session lifecycle");
         teardown.expect("destroy tier");
     }
