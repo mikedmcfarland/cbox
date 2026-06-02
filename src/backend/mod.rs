@@ -7,9 +7,9 @@
 //! The implicit `local` backend (Docker) is the only implementation today;
 //! see [`local_docker`].
 
-// `destroy` and `list_tiers` are part of the trait surface but not yet
-// reached by a command path; revisit when a `cbox tier rm` / structured
-// `cbox list --json` lands.
+// `remove_instance` and `list_tiers` are part of the trait surface but not yet
+// reached by a command path; revisit when a structured `cbox list --json`
+// lands.
 #![allow(dead_code)]
 
 pub mod local_docker;
@@ -41,8 +41,31 @@ pub trait Backend: Send + Sync {
     /// Stop the tier instance entirely. Same as pause for some backends.
     async fn stop(&self, tier: &str) -> Result<()>;
 
-    /// Destroy the tier instance and its resources. Tier state is lost.
-    async fn destroy(&self, tier: &str) -> Result<()>;
+    /// Remove just the tier instance (container/VM). Tier state stores
+    /// (claude state volume, workspaces, tier image) are left intact —
+    /// the instance can be recreated by [`ensure_running`] with the same
+    /// state. Idempotent: succeeds if no instance exists.
+    ///
+    /// This is the building block both `reset` and `tier_destroy` use to
+    /// guarantee the instance is gone before they touch state stores.
+    /// Callers wanting full teardown should prefer `reset` (instance +
+    /// claude state volume) or `tier_destroy` (reset + tier image).
+    async fn remove_instance(&self, tier: &str) -> Result<()>;
+
+    /// Wipe tier state: ensure the instance is gone, then remove the
+    /// per-tier claude state volume (ADR 014). Tier image is preserved
+    /// so the next `ensure_running` recreates an instance with a fresh
+    /// `.claude` directory.
+    ///
+    /// Use cases: recover from a corrupted/misowned volume, switch
+    /// Anthropic accounts (force re-OAuth), reset MCP credentials.
+    async fn reset(&self, tier: &str) -> Result<()>;
+
+    /// Full teardown: `reset` + remove the tier image and any host-side
+    /// session workspaces under this tier. After this, the tier is in
+    /// its un-built state — `cbox build <tier>` is required to use it
+    /// again. Idempotent on each step (missing resources are not errors).
+    async fn tier_destroy(&self, tier: &str) -> Result<()>;
 
     /// Current state of a tier's instance.
     async fn tier_state(&self, tier: &str) -> Result<TierState>;

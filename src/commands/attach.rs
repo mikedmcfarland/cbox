@@ -451,7 +451,7 @@ mod tests {
 
         // Idempotent: a previously-running `dev` tier may have a stale
         // workspace mount pointing into the developer's real HOME.
-        let _ = backend.destroy(tier).await;
+        let _ = backend.remove_instance(tier).await;
 
         let outcome: Result<()> = async {
             let project_arg = src.path().to_str().expect("src path is utf8").to_string();
@@ -525,7 +525,7 @@ mod tests {
         }
         .await;
 
-        let teardown = backend.destroy(tier).await;
+        let teardown = backend.remove_instance(tier).await;
         outcome.expect("attach orchestration");
         teardown.expect("destroy tier");
     }

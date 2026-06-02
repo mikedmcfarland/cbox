@@ -27,11 +27,14 @@ use bollard::models::{
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
-    StopContainerOptionsBuilder,
+    RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder, StopContainerOptionsBuilder,
 };
 
 use super::{Backend, Mount, MountSource, TierEndpoint, TierInfo, TierRunConfig, TierState};
+use crate::build::tier_image_tag;
+use crate::commands::common::claude_volume_name;
 use crate::config::NetworkMode;
+use crate::workspace::tier_workspace_dir;
 
 /// Docker label that marks every cbox-managed container.
 pub const MANAGED_BY_LABEL: &str = "managed-by";
@@ -142,8 +145,12 @@ impl Backend for LocalDockerBackend {
         Ok(())
     }
 
-    async fn destroy(&self, tier: &str) -> Result<()> {
+    async fn remove_instance(&self, tier: &str) -> Result<()> {
         let name = container_name(tier);
+        // `v: true` removes anonymous volumes attached to the container.
+        // The per-tier `.claude` volume is *named* (ADR 014), so it
+        // survives this call — that's intentional. Use `reset` or
+        // `tier_destroy` to wipe the named volume.
         let opts = RemoveContainerOptionsBuilder::default()
             .force(true)
             .v(true)
@@ -155,6 +162,94 @@ impl Backend for LocalDockerBackend {
             }) => Ok(()),
             Err(e) => Err(e).with_context(|| format!("remove {name}")),
         }
+    }
+
+    async fn reset(&self, tier: &str) -> Result<()> {
+        // Container must be gone before Docker will release the volume.
+        self.remove_instance(tier)
+            .await
+            .with_context(|| format!("remove instance for tier {tier:?}"))?;
+
+        let volume = claude_volume_name(tier);
+        let opts = RemoveVolumeOptionsBuilder::default().force(false).build();
+        match self.docker.remove_volume(&volume, Some(opts)).await {
+            Ok(()) => Ok(()),
+            // 404: volume never existed (tier never started). Treat as
+            // success — reset is idempotent and the desired postcondition
+            // ("the volume is gone") already holds.
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            // 409: volume in use. Surface a pointed message — this means
+            // some other process (a stale container we don't know about,
+            // a sibling cbox invocation) is holding the volume open.
+            Err(DockerError::DockerResponseServerError {
+                status_code: 409,
+                message,
+            }) => Err(anyhow::anyhow!(
+                "volume {volume} is still in use ({message}); \
+                 stop any container mounting it and retry"
+            )),
+            Err(e) => Err(e).with_context(|| format!("remove volume {volume}")),
+        }
+    }
+
+    async fn tier_destroy(&self, tier: &str) -> Result<()> {
+        self.reset(tier)
+            .await
+            .with_context(|| format!("reset tier {tier:?} before destroy"))?;
+
+        // Tier image. Use `noprune=false, force=false` so we get a
+        // pointed error rather than a silent untag if anything still
+        // references the image — that's a signal something is wrong
+        // (another container, a child image) the user should see.
+        let image = tier_image_tag(tier);
+        let opts = RemoveImageOptionsBuilder::default()
+            .force(false)
+            .noprune(false)
+            .build();
+        match self.docker.remove_image(&image, Some(opts), None).await {
+            Ok(_) => {}
+            // 404: image already gone. Idempotent.
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
+            // 409: conflict — image still referenced. Bubble up with
+            // context; forcing here would orphan child images silently.
+            Err(DockerError::DockerResponseServerError {
+                status_code: 409,
+                message,
+            }) => {
+                return Err(anyhow::anyhow!(
+                    "image {image} is still referenced ({message}); \
+                     remove dependent containers/images and retry"
+                ));
+            }
+            Err(e) => return Err(e).with_context(|| format!("remove image {image}")),
+        }
+
+        // Host-side per-session workspaces live under
+        // `~/.cbox/workspaces/<tier>/`. Sessions inside the (now removed)
+        // instance are gone with the container — but their on-host
+        // checkouts remain unless we wipe the directory. This is the
+        // "any sessions referencing it" cleanup the issue calls for on
+        // the local backend.
+        match tier_workspace_dir(tier) {
+            Ok(dir) => {
+                if tokio::fs::try_exists(&dir)
+                    .await
+                    .with_context(|| format!("stat workspace dir {}", dir.display()))?
+                {
+                    tokio::fs::remove_dir_all(&dir)
+                        .await
+                        .with_context(|| format!("remove workspace dir {}", dir.display()))?;
+                }
+            }
+            // HOME unset / unusable tier name. Don't fail destroy on it —
+            // the docker resources are already gone.
+            Err(e) => eprintln!("==> warning: could not locate tier workspace dir: {e}"),
+        }
+        Ok(())
     }
 
     async fn tier_state(&self, tier: &str) -> Result<TierState> {
@@ -499,7 +594,7 @@ mod tests {
         let tier = "dind-test";
 
         // Idempotent setup: tear down any leftover container.
-        let _ = backend.destroy(tier).await;
+        let _ = backend.remove_instance(tier).await;
 
         let cfg = TierRunConfig {
             image: DIND_TEST_IMAGE.to_string(),
@@ -542,7 +637,7 @@ mod tests {
             }
         }
 
-        let teardown = backend.destroy(tier).await;
+        let teardown = backend.remove_instance(tier).await;
 
         let version = version.expect("dockerd inside cbox-tier never reported a version");
         eprintln!("inner dockerd version: {}", version.trim());
@@ -576,7 +671,7 @@ mod tests {
         }
 
         let tier = "passwd-guard-test";
-        let _ = backend.destroy(tier).await;
+        let _ = backend.remove_instance(tier).await;
 
         let cfg = TierRunConfig {
             image: DIND_TEST_IMAGE.to_string(),
@@ -611,7 +706,7 @@ mod tests {
             }
         }
 
-        let teardown = backend.destroy(tier).await;
+        let teardown = backend.remove_instance(tier).await;
 
         let line = line.expect("getent shadow cbox returned nothing");
         // shadow(5) format: name:passwd:lastchange:min:max:warn:inactive:expire:reserved
@@ -629,6 +724,114 @@ mod tests {
             "expected empty passwd field after `passwd -d cbox`, got {pw_field:?} ({line:?})"
         );
         teardown.expect("destroy tier");
+    }
+
+    /// `reset` must wipe the per-tier `.claude` named volume (ADR 014).
+    /// Round-trip: bring up the tier, write a marker into the mounted
+    /// volume, call `reset`, then bring the tier back up and assert the
+    /// marker is gone. This is the issue #10 "actually destroys state"
+    /// guarantee — the historical bug was that `tier stop` left the
+    /// volume in place, so verifying the wipe is the load-bearing check.
+    ///
+    /// Ignored by default; run with `just integration`.
+    #[tokio::test]
+    #[ignore]
+    async fn reset_wipes_claude_volume() {
+        let backend = LocalDockerBackend::new().expect("connect to docker");
+        if backend
+            .docker()
+            .inspect_image(DIND_TEST_IMAGE)
+            .await
+            .is_err()
+        {
+            panic!(
+                "missing image {DIND_TEST_IMAGE}. Build it first: \
+                 CBOX_CONFIG=examples/full-setup/cbox.yaml \
+                 cargo run -- build dev"
+            );
+        }
+
+        let tier = "reset-roundtrip";
+        // Idempotent setup: leftover instance + volume from prior run.
+        let _ = backend.reset(tier).await;
+
+        // We must mount the per-tier `.claude` named volume by name —
+        // that's the resource the issue calls out, and only by mounting
+        // it can the marker survive (or fail to survive) across the
+        // reset. Use the same naming as `commands::common`.
+        let cfg = TierRunConfig {
+            image: DIND_TEST_IMAGE.to_string(),
+            env: Vec::new(),
+            network_mode: NetworkMode::Bridge,
+            privileged: true,
+            mounts: vec![Mount {
+                source: MountSource::Volume(claude_volume_name(tier)),
+                target: std::path::PathBuf::from("/home/cbox/.claude"),
+                read_only: false,
+            }],
+        };
+
+        backend
+            .ensure_running(tier, &cfg)
+            .await
+            .expect("start tier (pre-reset)");
+
+        // Write a marker file into the volume. Run as root so we don't
+        // race the entrypoint's chown of the mountpoint to `cbox`. The
+        // marker file is intentionally root-owned — what we're testing
+        // is that the *volume contents* are wiped, not whose UID owns
+        // them.
+        let (rc, _out) = exec_capture_as(
+            backend.docker(),
+            &container_name(tier),
+            Some("root"),
+            vec!["sh", "-c", "echo marker > /home/cbox/.claude/marker"],
+        )
+        .await
+        .expect("write marker");
+        assert_eq!(rc, 0, "writing marker should succeed");
+
+        // Confirm the marker is visible before reset (sanity check on
+        // the test setup — without this, a "marker gone after reset"
+        // assertion could pass against a setup that never actually
+        // wrote the marker).
+        let (rc, out) = exec_capture_as(
+            backend.docker(),
+            &container_name(tier),
+            Some("root"),
+            vec!["cat", "/home/cbox/.claude/marker"],
+        )
+        .await
+        .expect("read marker (pre-reset)");
+        assert_eq!(rc, 0, "marker should exist before reset");
+        assert_eq!(out.trim(), "marker");
+
+        // The act under test.
+        backend.reset(tier).await.expect("reset tier");
+
+        // Bring the tier back up; the volume should be re-created empty
+        // (Docker auto-creates named volumes on container start).
+        backend
+            .ensure_running(tier, &cfg)
+            .await
+            .expect("start tier (post-reset)");
+
+        let (rc, _out) = exec_capture_as(
+            backend.docker(),
+            &container_name(tier),
+            Some("root"),
+            vec!["test", "-f", "/home/cbox/.claude/marker"],
+        )
+        .await
+        .expect("probe marker post-reset");
+        assert_ne!(
+            rc, 0,
+            "marker file should be gone after reset (volume wiped)"
+        );
+
+        // Cleanup: full destroy so the test leaves no residue (image
+        // intentionally stays — we didn't build it).
+        backend.reset(tier).await.expect("final cleanup");
     }
 
     /// Helper for execing a command in a running container and capturing

@@ -348,7 +348,7 @@ mod tests {
         let session = "phase3-orch";
 
         // Idempotent cleanup of any prior container.
-        let _ = backend.destroy(tier).await;
+        let _ = backend.remove_instance(tier).await;
 
         let outcome: Result<()> = async {
             let project_arg = src.path().to_str().expect("src path is utf8").to_string();
@@ -462,7 +462,7 @@ mod tests {
         }
         .await;
 
-        let teardown = backend.destroy(tier).await;
+        let teardown = backend.remove_instance(tier).await;
         outcome.expect("phase 3 orchestration");
         teardown.expect("destroy tier");
     }

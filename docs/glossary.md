@@ -161,7 +161,9 @@ operates on sessions.
 | **auth** | `cbox auth <tier>`. One-time interactive **OAuth MCP registration** for a tier. Scoped to OAuth MCPs only. |
 | **list** | `cbox list`. Enumerates sessions and tier instances. |
 | **cleanup** | `cbox cleanup`. Stops idle tier instances (no live sessions). Operator convenience; not part of normal lifecycle. Distinct from **destroy** — stopped tiers keep their **claude state volume** and their workspaces, and resume via `cbox <name>` or `cbox tier resume`. |
-| **`cbox tier <op>`** | Tier-instance-level operations: `stop`, `pause`, `resume`. Distinct from session-level verbs at top level. `cbox list` covers the inspection role. |
+| **`cbox tier <op>`** | Tier-instance-level operations: `stop`, `pause`, `resume`, `reset`, `destroy`. Distinct from session-level verbs at top level. `cbox list` covers the inspection role. |
+| **tier reset** | `cbox tier reset <tier>`. Removes the tier instance and wipes the **claude state volume**. Tier image, on-host workspaces, and Anthropic credentials are preserved. Prompts for confirmation; `--yes` (`-y`) skips. Use for corrupted/misowned volume recovery and account switches. |
+| **tier destroy** | `cbox tier destroy <tier>`. Full tier teardown: **tier reset** + remove **tier image** + delete on-host workspaces under `~/.cbox/workspaces/<tier>/`. After this, `cbox build <tier>` is required to use the tier again. Prompts for confirmation; `--yes` (`-y`) skips. Distinct from session-level `cbox destroy <name>` (kills one session). |
 | **ssh-config** | `cbox ssh-config`. Regenerates `~/.ssh/cbox_hosts` with one `Host cbox-<tier>` stanza per running tier (loopback + current dynamic port + identity file). Users `Include` it once from `~/.ssh/config` so editors and shells can `ssh cbox-<tier>`. Idempotent and overwriting — the host port changes on every tier restart. |
 
 ### Action override flags
