@@ -109,6 +109,23 @@ Build and go:
     cbox build dev
     cd ~/projects/my-repo && cbox my-session
 
+### Anthropic auth
+
+Two ways to log Claude Code into Anthropic, both handled by the
+primitives above — no extra cbox config:
+
+- **API key.** Declare an `ANTHROPIC_API_KEY` env credential and list
+  it in the tier's `credentials:` (the example above). cbox resolves
+  and injects it at container start.
+- **OAuth (subscription).** Omit the Anthropic env credential and run
+  `cbox auth <tier>` once; complete the login interactively. Claude
+  Code stores the token under `/home/cbox/.claude/`, which lives on a
+  per-tier Docker volume and survives `cbox build`. Used by the
+  in-repo `cbox-dev` tier.
+
+Claude Code itself prefers `ANTHROPIC_API_KEY` over the stored OAuth
+token, so a tier that lists both will use the env var.
+
 For the full configuration model — environment Dockerfile, layers,
 tier `settings.json`, projects, credential shapes, MCP setup,
 Docker-in-Docker compose notes — see
