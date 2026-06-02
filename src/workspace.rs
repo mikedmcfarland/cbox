@@ -19,7 +19,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 
 use crate::backend::{Mount, MountSource};
-use crate::config::Config;
+use crate::config::{Config, repo_is_path};
 
 /// Path inside the container where the tier workspace is mounted.
 pub const WORKSPACE_TARGET: &str = "/workspace";
@@ -43,11 +43,15 @@ pub enum ProjectSource {
 /// - Starts with `/`, `./`, `../`, or `~` → filesystem path (must exist).
 /// - Anything else → look up in `cbox.yaml` `projects:`.
 ///
-/// Phase 2 does not yet support implicit project resolution from the
-/// current working directory; the caller must pass something.
+/// When `arg` is `None`, the current working directory is canonicalized
+/// and compared against the canonicalized `repo:` of each configured
+/// project that is path-shaped (URL-style entries are skipped — they
+/// have no host path to compare). A unique match wins; on no match or
+/// ambiguity, the error message lists the candidates that were checked.
 pub fn resolve_project(cfg: &Config, arg: Option<&str>) -> Result<ProjectSource> {
-    let arg = arg
-        .ok_or_else(|| anyhow::anyhow!("no project specified (provide a project name or path)"))?;
+    let Some(arg) = arg else {
+        return infer_project_from_cwd(cfg);
+    };
 
     if looks_like_path(arg) {
         let expanded = PathBuf::from(shellexpand::tilde(arg).into_owned());
@@ -71,6 +75,72 @@ pub fn resolve_project(cfg: &Config, arg: Option<&str>) -> Result<ProjectSource>
     bail!(
         "no project named {arg:?} in cbox.yaml; pass a path (./{arg} or /abs) to skip the lookup"
     );
+}
+
+/// Try to match the current working directory against a configured
+/// project's `repo:`. Path-shaped repos are already canonicalized at
+/// parse time (see `config::resolve_repo`), so this canonicalizes cwd
+/// once and compares string-for-string. URL-style repos are skipped.
+fn infer_project_from_cwd(cfg: &Config) -> Result<ProjectSource> {
+    let cwd = std::env::current_dir().context("determine current directory")?;
+    let cwd_canonical = cwd
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", cwd.display()))?;
+
+    // Names of every path-shaped project we considered, regardless of
+    // match outcome — surfaced in the error so the user can see which
+    // entries were eligible.
+    let mut considered: Vec<&str> = Vec::new();
+    let mut matches: Vec<(&str, &crate::config::ProjectConfig)> = Vec::new();
+
+    for (name, proj) in &cfg.projects {
+        if !repo_is_path(&proj.repo) {
+            continue;
+        }
+        considered.push(name.as_str());
+        // `repo:` is canonicalized at parse time when the path exists;
+        // if it didn't exist then, fall back to canonicalizing here so a
+        // freshly-cloned repo still matches. Failures (e.g. the repo
+        // path doesn't exist) simply skip the candidate.
+        let repo_canonical = match PathBuf::from(&proj.repo).canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if repo_canonical == cwd_canonical {
+            matches.push((name.as_str(), proj));
+        }
+    }
+
+    match matches.as_slice() {
+        [(name, proj)] => Ok(ProjectSource::Configured {
+            name: (*name).to_string(),
+            repo: proj.repo.clone(),
+            tier: proj.tier.clone(),
+        }),
+        [] => {
+            let hint = if considered.is_empty() {
+                String::from(
+                    "no path-shaped projects in cbox.yaml to match against (URL-style \
+                     entries are skipped)",
+                )
+            } else {
+                format!("checked: {}", considered.join(", "))
+            };
+            bail!(
+                "no project specified and cwd {} does not match any configured project; {hint}",
+                cwd_canonical.display()
+            )
+        }
+        many => {
+            let names: Vec<&str> = many.iter().map(|(n, _)| *n).collect();
+            bail!(
+                "no project specified and cwd {} matches multiple configured projects: {}; \
+                 pass an explicit project name to disambiguate",
+                cwd_canonical.display(),
+                names.join(", ")
+            )
+        }
+    }
 }
 
 fn looks_like_path(s: &str) -> bool {
@@ -268,9 +338,105 @@ projects:
     }
 
     #[test]
-    fn missing_project_arg_is_an_error() {
+    fn missing_project_arg_with_no_match_errors_with_cwd_hint() {
         let cfg = synthetic_config("");
-        assert!(resolve_project(&cfg, None).is_err());
+        let err = resolve_project(&cfg, None).unwrap_err().to_string();
+        assert!(err.contains("cwd"), "{err}");
+        assert!(err.contains("no path-shaped projects"), "{err}");
+    }
+
+    /// Helper for cwd-inference tests: build a config with one or more
+    /// path-shaped projects pointing at tempdirs, run `resolve_project`
+    /// with cwd set to `from_dir`, and return the result. cwd is mutated
+    /// under the shared `home` serial lock — same convention as the
+    /// other env-mutating tests in this file.
+    fn run_with_cwd<R>(from_dir: &Path, f: impl FnOnce() -> R) -> R {
+        struct CwdGuard(PathBuf);
+        impl Drop for CwdGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let prev = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(from_dir).expect("chdir");
+        let _g = CwdGuard(prev);
+        f()
+    }
+
+    #[test]
+    #[serial_test::serial(home)]
+    fn missing_project_arg_infers_from_cwd_on_unique_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().canonicalize().unwrap();
+        let extra = format!("  cbox:\n    repo: {}\n    tier: dev\n", repo_dir.display());
+        let cfg = synthetic_config(&extra);
+        let resolved = run_with_cwd(&repo_dir, || resolve_project(&cfg, None)).unwrap();
+        match resolved {
+            ProjectSource::Configured { name, repo, tier } => {
+                assert_eq!(name, "cbox");
+                assert_eq!(repo, repo_dir.to_string_lossy());
+                assert_eq!(tier.as_deref(), Some("dev"));
+            }
+            _ => panic!("expected configured project"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(home)]
+    fn missing_project_arg_ambiguous_match_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().canonicalize().unwrap();
+        // Two projects pointing at the same canonical path.
+        let extra = format!(
+            "  a:\n    repo: {0}\n    tier: dev\n  b:\n    repo: {0}\n    tier: dev\n",
+            repo_dir.display()
+        );
+        let cfg = synthetic_config(&extra);
+        let err = run_with_cwd(&repo_dir, || resolve_project(&cfg, None))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("multiple configured projects"), "{err}");
+        assert!(err.contains('a') && err.contains('b'), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial(home)]
+    fn missing_project_arg_no_match_lists_considered() {
+        // One path-shaped project, but cwd is elsewhere — error should
+        // mention the project name that was checked.
+        let repo_tmp = tempfile::tempdir().unwrap();
+        let cwd_tmp = tempfile::tempdir().unwrap();
+        let repo_dir = repo_tmp.path().canonicalize().unwrap();
+        let cwd_dir = cwd_tmp.path().canonicalize().unwrap();
+        let extra = format!(
+            "  myproj:\n    repo: {}\n    tier: dev\n",
+            repo_dir.display()
+        );
+        let cfg = synthetic_config(&extra);
+        let err = run_with_cwd(&cwd_dir, || resolve_project(&cfg, None))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not match"), "{err}");
+        assert!(err.contains("checked: myproj"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial(home)]
+    fn missing_project_arg_skips_url_only_projects() {
+        // Even when cwd is "the project," a URL-shaped `repo:` can't
+        // match, so inference fails and the error notes that no
+        // path-shaped projects were eligible.
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd_dir = tmp.path().canonicalize().unwrap();
+        let extra = concat!(
+            "  ssh:\n    repo: git@github.com:org/app.git\n    tier: dev\n",
+            "  bare:\n    repo: some-shorthand\n    tier: dev\n",
+        );
+        let cfg = synthetic_config(extra);
+        let err = run_with_cwd(&cwd_dir, || resolve_project(&cfg, None))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no path-shaped projects"), "{err}");
     }
 
     #[test]
