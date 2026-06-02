@@ -126,6 +126,26 @@ pub enum TierOp {
         /// Tier name.
         tier: String,
     },
+    /// Wipe per-tier state: stop the instance and remove the `.claude`
+    /// named volume. Tier image is preserved. Destroys persisted OAuth
+    /// tokens and MCP credentials — confirms before proceeding.
+    Reset {
+        /// Tier name.
+        tier: String,
+        /// Skip the interactive confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Full tier teardown: reset + remove the tier image + on-host
+    /// session workspaces under this tier. After this, `cbox build`
+    /// is required to use the tier again. Confirms before proceeding.
+    Destroy {
+        /// Tier name.
+        tier: String,
+        /// Skip the interactive confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// List tier instances and their states.
     List,
 }

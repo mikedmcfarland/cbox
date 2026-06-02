@@ -79,10 +79,12 @@ verb), revisit.
   rebuilds.
 - Claude Code's onboarding / first-run UI only fires once per tier
   per host, not once per image build.
-- `cbox tier rm` (when it lands) must offer a `--keep-state` /
-  `--also-state` choice or document the volume's persistence
-  explicitly — otherwise users expect "delete the tier" to actually
-  delete it.
+- Teardown is split into two named verbs rather than one verb with
+  flags, because the blast radius differs visibly:
+  - `cbox tier reset <tier>` wipes the **claude state volume** (and
+    the tier instance) but keeps the image and on-host workspaces.
+  - `cbox tier destroy <tier>` does a `reset` *and* removes the tier
+    image and the on-host workspaces under `~/.cbox/workspaces/<tier>/`.
 - The volume is **part of the trust boundary** (ADR 012). On the
   local backend this is fine — both the volume and the workspace bind
   mount live on the user's machine. On a remote backend the volume
