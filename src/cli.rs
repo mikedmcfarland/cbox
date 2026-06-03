@@ -67,6 +67,23 @@ pub enum Command {
     Auth {
         /// Tier name.
         tier: String,
+
+        /// Loopback port to forward host->container for OAuth callbacks
+        /// (`-L 127.0.0.1:PORT:127.0.0.1:PORT`). Repeatable. Defaults to
+        /// `54545` (Anthropic `/login`'s callback port). Pass
+        /// `--no-forward-port` to disable, or specify your own ports for
+        /// OAuth-MCP loopback callbacks. See ADR 019.
+        #[arg(
+            long = "forward-port",
+            value_name = "PORT",
+            conflicts_with = "no_forward_port"
+        )]
+        forward_port: Vec<u16>,
+
+        /// Disable all OAuth callback port forwarding. Falls back to the
+        /// browser code-paste flow.
+        #[arg(long = "no-forward-port", conflicts_with = "forward_port")]
+        no_forward_port: bool,
     },
 
     /// List all sessions and tier instances.

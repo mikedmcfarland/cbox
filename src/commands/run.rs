@@ -75,6 +75,7 @@ pub async fn run(
     let ssh = SshConn {
         endpoint,
         identity_file: keypair.private_key_path.clone(),
+        forward_ports: Vec::new(),
     };
 
     // ensure_running returns once the container is up, but sshd inside
@@ -192,6 +193,7 @@ async fn ensure_session_not_alive_elsewhere(
         let ssh = SshConn {
             endpoint,
             identity_file: keypair.private_key_path.clone(),
+            forward_ports: Vec::new(),
         };
         if is_alive(&ssh, session).await? {
             bail!(
@@ -376,6 +378,7 @@ mod tests {
             let ssh = crate::ssh::SshConn {
                 endpoint,
                 identity_file: keypair.private_key_path.clone(),
+                forward_ports: Vec::new(),
             };
             let mut alive_found = false;
             for _ in 0..30 {

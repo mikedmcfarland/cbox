@@ -159,6 +159,7 @@ operates on sessions.
 | **destroy** | `cbox destroy <name>`. Destroys the session: removes the **session socket**. **Session workspace** persists by default. The colloquial "kill" is not cbox vocabulary. |
 | **build** | `cbox build [tier]`. Builds the tier image (the build chain). |
 | **auth** | `cbox auth <tier>`. One-time interactive **OAuth MCP registration** for a tier. Scoped to OAuth MCPs only. |
+| **OAuth callback forwarding** | `cbox auth`'s `-L 127.0.0.1:N:127.0.0.1:N` ssh forward of an OAuth provider's loopback redirect URL into the tier instance. Defaults to port 54545 (Anthropic `/login`); pass `--forward-port` to add others, `--no-forward-port` to disable. Loopback-bound on both ends — never exposed off-host. See ADR 019. |
 | **list** | `cbox list`. Enumerates sessions and tier instances. |
 | **cleanup** | `cbox cleanup`. Stops idle tier instances (no live sessions). Operator convenience; not part of normal lifecycle. Distinct from **destroy** — stopped tiers keep their **claude state volume** and their workspaces, and resume via `cbox <name>` or `cbox tier resume`. |
 | **`cbox tier <op>`** | Tier-instance-level operations: `stop`, `pause`, `resume`, `reset`, `destroy`. Distinct from session-level verbs at top level. `cbox list` covers the inspection role. |

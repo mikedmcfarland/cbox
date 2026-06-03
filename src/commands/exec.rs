@@ -58,6 +58,7 @@ pub async fn run(name: String, cmd: Vec<String>) -> Result<()> {
         let ssh = SshConn {
             endpoint,
             identity_file: keypair.private_key_path.clone(),
+            forward_ports: Vec::new(),
         };
         if is_alive(&ssh, &name).await? {
             matches.push((tier_name.clone(), ssh));

@@ -59,6 +59,7 @@ pub(crate) async fn run_with(out: &mut impl Write) -> Result<()> {
             let ssh = SshConn {
                 endpoint,
                 identity_file: kp.private_key_path.clone(),
+                forward_ports: Vec::new(),
             };
             list_active(&ssh)
                 .await

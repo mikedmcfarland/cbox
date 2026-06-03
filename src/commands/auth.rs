@@ -23,6 +23,18 @@
 //! The OAuth tokens themselves land on the per-tier `.claude` named
 //! volume (see [`crate::commands::common::CLAUDE_STATE_TARGET`]), so
 //! they survive image rebuilds.
+//!
+//! ## OAuth callback forwarding (ADR 019)
+//!
+//! Anthropic's `/login` and OAuth-MCP flows print a `localhost:<port>`
+//! `redirect_uri` and expect a host browser to land on it. Without
+//! port forwarding, the user copies the resulting `?code=...` out of
+//! the broken redirect page and pastes it back into the terminal.
+//! With `--forward-port` (defaulting to `54545`, Anthropic's known
+//! callback port), ssh forwards loopback->loopback so the browser
+//! redirect completes silently. If the host port is busy, OpenSSH
+//! prints `bind: Address already in use` and the session continues
+//! with the manual-paste fallback intact.
 
 use anyhow::{Context, Result, bail};
 
@@ -35,7 +47,34 @@ use crate::keys::ensure_keypair;
 use crate::ssh::{SshConn, shell_quote, wait_for_sshd};
 use crate::tmux;
 
-pub async fn run(tier: String) -> Result<()> {
+/// Anthropic CLI `/login` OAuth callback port. Verifiable any time by
+/// running `/login` and reading the `redirect_uri` query parameter in
+/// the printed authorization URL — no token paste needed. See ADR 019.
+pub const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 54545;
+
+/// Decide which loopback ports `cbox auth` should forward into the tier.
+///
+/// Precedence: explicit `--forward-port` wins; `--no-forward-port`
+/// disables; otherwise the Anthropic `/login` default
+/// ([`DEFAULT_OAUTH_CALLBACK_PORT`]) is forwarded so the common case
+/// "just works". Duplicates are dropped (ssh would warn anyway).
+pub fn resolve_forward_ports(forward_port: Vec<u16>, no_forward_port: bool) -> Vec<u16> {
+    if no_forward_port {
+        return Vec::new();
+    }
+    let mut ports = if forward_port.is_empty() {
+        vec![DEFAULT_OAUTH_CALLBACK_PORT]
+    } else {
+        forward_port
+    };
+    // Stable de-dup: preserves first-seen order so the log line
+    // matches the user's `--forward-port` order.
+    let mut seen = std::collections::HashSet::new();
+    ports.retain(|p| seen.insert(*p));
+    ports
+}
+
+pub async fn run(tier: String, forward_port: Vec<u16>, no_forward_port: bool) -> Result<()> {
     let cfg = Config::load_async().await?;
     let tier_cfg = cfg
         .tiers
@@ -54,9 +93,18 @@ pub async fn run(tier: String) -> Result<()> {
         .ensure_running(&tier, &run_cfg)
         .await
         .with_context(|| format!("start tier {tier:?}"))?;
+    let forward_ports = resolve_forward_ports(forward_port, no_forward_port);
+    for port in &forward_ports {
+        eprintln!(
+            "==> forwarding localhost:{port} -> tier loopback \
+             (for OAuth callback; if the port is busy on this host, \
+             OAuth still works via manual code paste)"
+        );
+    }
     let ssh = SshConn {
         endpoint,
         identity_file: keypair.private_key_path.clone(),
+        forward_ports,
     };
     wait_for_sshd(&ssh, std::time::Duration::from_secs(60))
         .await
@@ -92,4 +140,44 @@ async fn run_inline(ssh: &SshConn, remote: &str) -> Result<()> {
         bail!("ssh exited with {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_forward_ports_defaults_to_anthropic_callback_port() {
+        let ports = resolve_forward_ports(Vec::new(), false);
+        assert_eq!(ports, vec![DEFAULT_OAUTH_CALLBACK_PORT]);
+    }
+
+    #[test]
+    fn resolve_forward_ports_no_forward_wins() {
+        let ports = resolve_forward_ports(vec![9999], true);
+        assert!(
+            ports.is_empty(),
+            "no_forward_port should disable forwarding"
+        );
+    }
+
+    #[test]
+    fn resolve_forward_ports_uses_user_supplied_ports() {
+        let ports = resolve_forward_ports(vec![8080, 9090], false);
+        assert_eq!(ports, vec![8080, 9090]);
+    }
+
+    #[test]
+    fn resolve_forward_ports_dedups_preserving_order() {
+        let ports = resolve_forward_ports(vec![8080, 9090, 8080, 7070], false);
+        assert_eq!(ports, vec![8080, 9090, 7070]);
+    }
+
+    #[test]
+    fn resolve_forward_ports_user_supplied_overrides_default() {
+        // Explicit non-empty list means user opted into specific ports
+        // — don't silently add 54545 to it.
+        let ports = resolve_forward_ports(vec![8080], false);
+        assert_eq!(ports, vec![8080]);
+    }
 }
